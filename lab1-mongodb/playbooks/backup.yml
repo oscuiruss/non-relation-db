@@ -1,0 +1,88 @@
+---
+- name: Create timestamped MongoDB backups
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  vars:
+    mongodb_backup_root: /var/backups/mongodb-lab
+
+  tasks:
+    - name: Require backup secret
+      ansible.builtin.assert:
+        that:
+          - vault_backup_password | length >= 12
+      no_log: true
+
+    - name: Create protected backup directory
+      ansible.builtin.file:
+        path: "{{ mongodb_backup_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Obtain a UTC backup timestamp
+      ansible.builtin.command: date -u +%Y%m%dT%H%M%SZ
+      register: mongodb_backup_timestamp
+      changed_when: false
+
+    - name: Create protected temporary credentials file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: mongodb-backup-
+        suffix: .yml
+      register: mongodb_backup_config
+      no_log: true
+
+    - name: Run backups with temporary protected credentials
+      block:
+        - name: Write temporary backup credentials
+          ansible.builtin.copy:
+            content: |
+              uri: "mongodb://backup_user@127.0.0.1:{{ mongodb_port }}/?authSource=admin"
+              password: {{ vault_backup_password | to_json }}
+            dest: "{{ mongodb_backup_config.path }}"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Back up the university database
+          ansible.builtin.command:
+            argv:
+              - mongodump
+              - --config
+              - "{{ mongodb_backup_config.path }}"
+              - --db
+              - university
+              - --gzip
+              - --out
+              - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-university"
+          no_log: true
+
+        - name: Back up all study databases to an archive
+          ansible.builtin.command:
+            argv:
+              - mongodump
+              - --config
+              - "{{ mongodb_backup_config.path }}"
+              - --gzip
+              - "--archive={{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-all-study-dbs.archive.gz"
+              - --nsInclude
+              - "university.*"
+              - --nsInclude
+              - "library.*"
+          no_log: true
+      always:
+        - name: Remove temporary backup credentials
+          ansible.builtin.file:
+            path: "{{ mongodb_backup_config.path }}"
+            state: absent
+          no_log: true
+
+    - name: Report created backup paths
+      ansible.builtin.debug:
+        msg:
+          - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-university"
+          - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-all-study-dbs.archive.gz"

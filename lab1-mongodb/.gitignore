@@ -7,3 +7,5 @@ dump/
 *.archive
 *.archive.gz
 *.log
+.vault-password
+inventories/lab/group_vars/all/vault.yml
