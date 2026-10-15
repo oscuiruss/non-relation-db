@@ -13,6 +13,11 @@
           - ansible_architecture in ['aarch64', 'x86_64']
         fail_msg: This playbook supports Ubuntu 24.04+ on ARM64 or AMD64.
 
+    - name: Remove legacy MongoDB apt source created by manual installation
+      ansible.builtin.file:
+        path: "/etc/apt/sources.list.d/mongodb-org-{{ mongodb_major_version }}.list"
+        state: absent
+
     - name: Install repository prerequisites
       ansible.builtin.apt:
         name:
