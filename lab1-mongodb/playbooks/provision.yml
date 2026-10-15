@@ -76,7 +76,7 @@
           - mongosh
           - --quiet
           - --eval
-          - db.adminCommand({ping: 1}).ok
+          - "db.adminCommand({ ping: 1 }).ok"
       register: mongodb_ping
       changed_when: false
 
