@@ -2,24 +2,25 @@
 
 ## Как я делала эту работу
 
-Цель работы — развернуть MongoDB без Docker и показать, что я умею не только
-запустить базу, но и сопровождать её: управлять службой, пользователями и ролями,
-делать резервные копии, восстанавливать данные и смотреть метрики.
+Эту лабораторную я делала на MacBook с процессором M3. Так как MongoDB нужно
+было установить без Docker, я создала в VMware Fusion виртуальную машину с
+Ubuntu Server 24.04 ARM64. В итоге MongoDB и мониторинг работают внутри Ubuntu,
+а файлы проекта и Ansible находятся на Mac.
 
-Я работаю на MacBook с процессором M3. В VMware Fusion создала виртуальную машину
-с Ubuntu Server 24.04 ARM64. MongoDB работает внутри Ubuntu, а Ansible я запускаю
-с Mac.
+В работе нужно было не просто установить MongoDB. Ещё я проверила управление
+службой, настроила пользователей и роли, сделала несколько резервных копий,
+восстановила удалённую коллекцию и вывела метрики в Grafana.
 
 ### Почему я решила использовать Ansible
 
-Сначала MongoDB настраивалась вручную через SSH. Для одной команды это нормально,
-но вся лабораторная состоит из большого количества связанных действий. Если
-выполнять их вручную, легко пропустить шаг, ошибиться в команде или потом не
-вспомнить, как был настроен сервер.
+Сначала я подключалась к Ubuntu по SSH и выполняла команды вручную. Но дальше
+стало понятно, что действий слишком много: установка пакетов, изменение
+конфигурации, создание пользователей, резервные копии и мониторинг. Делать всё
+это руками каждый раз неудобно, и легко забыть какую-нибудь команду.
 
-Поэтому дальнейшую настройку я решила делать через Ansible. В этой схеме Mac —
-control node, а Ubuntu — managed node. Ansible подключается к Ubuntu по SSH и
-выполняет сценарии из playbook-файлов.
+Поэтому я решила продолжить через Ansible — так это было бы ближе к реальной
+настройке сервера. Mac стал управляющей машиной, а Ubuntu — сервером, к которому
+Ansible подключается по SSH и запускает playbook-файлы.
 
 ```text
 Mac: Git-репозиторий + Ansible
@@ -29,15 +30,19 @@ Mac: Git-репозиторий + Ansible
 Ubuntu VM: MongoDB и службы мониторинга
 ```
 
-Весь репозиторий копировать на VM не нужно. Ansible сам передаёт только нужные
-скрипты и конфигурации. Пароли находятся в зашифрованном `vault.yml` и не
-попадают в Git.
+Копировать весь репозиторий на VM при этом не пришлось: Ansible сам передаёт
+только нужные файлы. Пароли я убрала в зашифрованный `vault.yml`, а сам файл
+добавлен в `.gitignore`, поэтому настоящих паролей в Git нет.
 
 ### Виртуальная машина и SSH
 
-На Ubuntu создан пользователь `ola` с правами `sudo`. VM получила адрес
-`192.168.60.133` в NAT-сети VMware. Сначала вход выполнялся по паролю, затем я
-настроила SSH-ключ. Проверка Ansible завершилась ответом:
+На Ubuntu я создала пользователя `ola` с правами `sudo`. VM получила адрес
+`192.168.60.133` в NAT-сети VMware. Сначала я входила по паролю, потом настроила
+SSH-ключ.
+
+С ключом тоже получилось не сразу: обычный `ssh` подключался, а Ansible получал
+`Permission denied`. Ключ был защищён парольной фразой и не был добавлен в
+`ssh-agent`. После добавления ключа проверка Ansible вернула:
 
 ```text
 mongo-lab | SUCCESS => {
@@ -46,29 +51,29 @@ mongo-lab | SUCCESS => {
 }
 ```
 
-Это означает, что Mac видит VM, SSH работает и Ansible может выполнять на Ubuntu
-свои модули.
+После ответа `pong` стало понятно, что Mac видит VM и Ansible может выполнять на
+ней команды.
 
 ### Установка MongoDB
 
-При первой попытке выполнить `sudo apt install mongodb-org` пакет не нашёлся.
-Причина была в том, что `mongodb-org` отсутствует в стандартных репозиториях
-Ubuntu. Я добавила официальный репозиторий MongoDB 8.0, после чего пакет стал
-доступен для APT.
+Сначала я сразу попробовала выполнить `sudo apt install mongodb-org`, но APT
+написал, что такого пакета нет. Оказалось, что `mongodb-org` не входит в обычные
+репозитории Ubuntu. После добавления официального репозитория MongoDB 8.0 пакет
+нашёлся и установился.
 
 После установки включила автозапуск `mongod` через systemd. При первой проверке
 `mongosh` вернул `ECONNREFUSED`, потому что сервер ещё не принимал подключения.
 После запуска службы команда `ping` стала выполняться успешно.
 
-Базовую конфигурацию затем закрепила в `playbooks/provision.yml`, чтобы установку
-можно было повторить на другой VM.
+Когда ручная установка заработала, я перенесла эти действия в
+`playbooks/provision.yml`, чтобы настройку можно было повторить, а не вспоминать
+все команды заново.
 
 ### Управление службой MongoDB
 
-Работу с системной службой проверила через `playbooks/service-demo.yml`. Сценарий
-остановил `mongod` и убедился, что порт `27017` закрылся. Затем он снова запустил
-MongoDB, включил автозапуск службы и выполнил перезапуск. После перезапуска порт
-снова стал доступен.
+Управление службой я вынесла в `playbooks/service-demo.yml`. Он остановил
+`mongod`, проверил, что порт `27017` закрылся, потом снова запустил MongoDB и
+выполнил перезапуск. Там же включается автозапуск после перезагрузки Ubuntu.
 
 Первый запуск сценария завершился ошибкой:
 
@@ -76,9 +81,9 @@ MongoDB, включил автозапуск службы и выполнил п
 Attempting to decrypt but no vault secrets found
 ```
 
-Хотя этому сценарию не нужны пароли MongoDB, Ansible автоматически загружает
-зашифрованный `vault.yml` из общих переменных inventory. Поэтому я повторила
-запуск с параметром `--ask-vault-pass`. После этого все проверки прошли:
+Я сначала не добавила `--ask-vault-pass`, потому что самому управлению службой
+пароль MongoDB не нужен. Но Ansible всё равно загружает общий `vault.yml` из
+inventory. Повторила команду с `--ask-vault-pass`, и после этого всё прошло:
 
 ```text
 mongo-lab : ok=5 changed=3 unreachable=0 failed=0
@@ -86,20 +91,19 @@ mongo-lab : ok=5 changed=3 unreachable=0 failed=0
 
 ### Что не получилось с первого раза
 
-Первый запуск `provision.yml` не прошёл сразу. Сначала APT сообщил:
+`provision.yml` тоже не заработал с первого запуска. Сначала APT сообщил:
 
 ```text
 Conflicting values set for option Signed-By
 ```
 
-MongoDB уже устанавливалась вручную, поэтому на VM остался старый файл
-репозитория с ключом `.gpg`. Ansible добавил тот же репозиторий в новом формате с
-ключом `.asc`. APT увидел две записи и остановился. В playbook добавила удаление
-старого `.list` перед созданием новой записи.
+Проблема появилась из-за того, что до Ansible я уже устанавливала MongoDB
+вручную. На VM остался старый файл репозитория с ключом `.gpg`, а playbook добавил
+ещё один вариант с ключом `.asc`. APT увидел две разные настройки одного
+репозитория. Я добавила в playbook удаление старого `.list`, и конфликт исчез.
 
-После этого сломалась проверка `mongosh`: YAML неправильно разобрал выражение
-`{ ping: 1 }`. Я заключила выражение в кавычки, чтобы оно передавалось в MongoDB
-как JavaScript, а не как YAML-словарь. После исправления получила:
+Следующей ошибкой была проверка `mongosh`: YAML разобрал `{ ping: 1 }` не как
+строку JavaScript. Я исправила кавычки, после чего проверка наконец вернула:
 
 ```text
 MongoDB ping returned 1
@@ -107,15 +111,15 @@ MongoDB ping returned 1
 
 ### Авторизация и пароли
 
-Пароли пользователей MongoDB хранятся в зашифрованном Ansible Vault. Отдельно
-хранятся пароли администратора, учебных пользователей, backup, restore и
-экспортера. Файл с настоящими секретами исключён из Git.
+Все пароли MongoDB я храню в Ansible Vault. Там отдельно лежат пароли
+администратора, учебных пользователей, backup, restore и exporter. В открытом
+виде в репозиторий они не попадают.
 
-Playbook `secure.yml` включил `authorization: enabled` и должен был создать
-первого администратора `lab_admin`. Здесь тоже появилась ошибка. Bootstrap-скрипт
-пытался сначала вызвать `getUser()`, но MongoDB в режиме localhost exception
-разрешает без авторизации только создать первого пользователя. Я вынесла первый
-`createUser()` в отдельный скрипт без предварительного запроса пользователей.
+`secure.yml` включает `authorization: enabled` и создаёт первого администратора
+`lab_admin`. На этом шаге снова была ошибка: скрипт сначала вызывал `getUser()`,
+но режим localhost exception разрешает без авторизации только сразу создать
+первого пользователя. Поэтому первый `createUser()` я вынесла в отдельный
+скрипт, где перед ним нет других запросов.
 
 После исправления результат был таким:
 
@@ -123,20 +127,21 @@ Playbook `secure.yml` включил `authorization: enabled` и должен б
 mongo-lab : ok=9 changed=2 unreachable=0 failed=0
 ```
 
-Авторизация включена, администратор создан, вход с его паролем проверен.
+После этого авторизация включилась, администратор создался, и вход под ним
+прошёл успешно.
 
 ### Учебные базы, роли и пользователи
 
-Playbook `configure-lab.yml` создал базы `university` и `library`, добавил
-тестовые документы и индексы. Также созданы собственные роли:
+Через `configure-lab.yml` я создала базы `university` и `library`, тестовые
+документы и индексы. Для лабораторной добавила свои роли:
 
 - `universityReader` — чтение учебной базы;
 - `studentEditor` — работа с коллекцией `students`;
 - `gradesOnlyReader` — чтение только коллекции `grades`;
 - `temporaryRole` — временная роль для демонстрации удаления.
 
-Для ролей созданы отдельные пользователи. Кроме них появились служебные учётные
-записи `backup_user`, `restore_user` и `mongodb_exporter`.
+Для этих ролей я создала отдельных пользователей. Ещё понадобились служебные
+пользователи `backup_user`, `restore_user` и `mongodb_exporter`.
 
 Результат настройки:
 
@@ -146,14 +151,14 @@ mongo-lab : ok=9 changed=7 unreachable=0 failed=0
 
 ### Проверка ролевой модели
 
-После создания пользователей я запустила `playbooks/role-demo.yml`. Сценарий
-назначил пользователю дополнительную роль, отозвал её и изменил разрешения
-существующей роли.
+Потом запустила `playbooks/role-demo.yml`: он назначил пользователю
+дополнительную роль, потом отозвал её и изменил разрешения уже существующей
+роли.
 
-Отдельно проверила доступ только к одной коллекции. Пользователь
-`grades_reader` смог прочитать документ из `university.grades`, но при попытке
-прочитать `university.students` MongoDB отказала в доступе. Ansible подтвердил,
-что отказ был ожидаемым:
+Отдельно мне нужно было показать доступ только к одной коллекции.
+`grades_reader` смог прочитать `university.grades`, но не смог прочитать
+`university.students`. То есть доступ не открылся сразу ко всей базе. В выводе
+это выглядело так:
 
 ```text
 Access to university.students was denied as expected.
@@ -174,16 +179,16 @@ mongo-lab : ok=10 changed=3 unreachable=0 failed=0
 
 ### Резервные копии
 
-Для копирования данных использовала `playbooks/backup.yml`. Сценарий запускает
-`mongodump` от отдельного пользователя `backup_user`, а имена копий содержат
-дату и время.
+Копии я делала через `playbooks/backup.yml`. Внутри запускается `mongodump` от
+отдельного пользователя `backup_user`. В имя каждой копии добавляется дата и
+время, чтобы следующий запуск не затёр предыдущий.
 
-Первая попытка прошла только частично: отдельная копия `university` создалась, но
-общая копия учебных баз завершилась с `failed=1`. Причиной оказался параметр
-`--nsInclude`. Он поддерживается программой `mongorestore`, но не `mongodump`.
+С первого раза backup прошёл только наполовину: отдельная копия `university`
+создалась, а общая копия закончилась с `failed=1`. Я использовала параметр
+`--nsInclude`, но он есть у `mongorestore`, а у `mongodump` его нет.
 
-Я исправила сценарий: теперь он последовательно копирует базы `university` и
-`library` в один общий каталог. После исправления были созданы:
+Я переделала этот шаг: теперь `university` и `library` по очереди копируются в
+один общий каталог. После исправления появились такие каталоги:
 
 ```text
 /var/backups/mongodb-lab/20261017T132635Z-university
@@ -196,8 +201,8 @@ mongo-lab : ok=10 changed=3 unreachable=0 failed=0
 mongo-lab : ok=9 changed=5 unreachable=0 failed=0
 ```
 
-Затем я запустила тот же сценарий ещё раз. Вторая полная копия получила другую
-метку времени. Команда `ls -1 /var/backups/mongodb-lab` показала:
+Потом запустила тот же playbook ещё раз, чтобы проверить, что старая копия не
+перезапишется. Команда `ls -1 /var/backups/mongodb-lab` показала:
 
 ```text
 20261017T132350Z-university
@@ -207,17 +212,17 @@ mongo-lab : ok=9 changed=5 unreachable=0 failed=0
 20261017T132806Z-university
 ```
 
-Каталог `132350Z-university` остался от первой частично успешной попытки. Пары
-`132635Z` и `132806Z` — две полные копии. Новая копия не перезаписала старую,
-потому что время создания входит в название каждого каталога.
+`132350Z-university` остался от первой неудачной попытки. А пары `132635Z` и
+`132806Z` — это уже две полные копии. По разным именам видно, что новая копия не
+перезаписала старую.
 
 ### Восстановление коллекции
 
-Для проверки восстановления запустила `playbooks/restore-demo.yml`. Перед
-удалением сценарий нашёл самую свежую копию и проверил, что в ней действительно
-есть файл коллекции `students`. После этого он удалил
-`university.students`, восстановил только эту коллекцию через `mongorestore` и
-посчитал документы.
+Восстановление проверила через `playbooks/restore-demo.yml`. Я не хотела сначала
+удалять коллекцию, а потом выяснять, что копия пустая, поэтому playbook сначала
+находит свежий backup и проверяет наличие файла `students`. Только после этой
+проверки он удаляет `university.students` и восстанавливает её через
+`mongorestore`.
 
 ```text
 Restored university.students from
@@ -225,8 +230,7 @@ Restored university.students from
 document count is 3.
 ```
 
-Количество документов после восстановления совпало с исходным. Сценарий
-завершился с результатом:
+После восстановления снова было 3 документа — столько же, сколько до удаления:
 
 ```text
 mongo-lab : ok=14 changed=5 unreachable=0 failed=0
@@ -234,9 +238,8 @@ mongo-lab : ok=14 changed=5 unreachable=0 failed=0
 
 ### Мониторинг
 
-Playbook `monitoring.yml` установил Percona MongoDB Exporter, Prometheus и
-Grafana. Exporter получает показатели MongoDB, Prometheus сохраняет их, а
-Grafana отображает на дашборде.
+Мониторинг собрала из трёх частей: Percona MongoDB Exporter получает показатели
+из MongoDB, Prometheus их собирает, а Grafana строит графики.
 
 Для дашборда выбрала следующие показатели:
 
@@ -246,322 +249,64 @@ Grafana отображает на дашборде.
 - количество операций в секунду;
 - объём занятой оперативной памяти.
 
-При первой проверке exporter и Prometheus уже отвечали, а Grafana вернула
-`Connection refused`. Служба была запущена, но при первом старте ещё не успела
-открыть порт `3000`. В playbook добавила ожидание портов `9216`, `9090` и `3000`
+С мониторингом было несколько мелких ошибок. Сначала exporter и Prometheus уже
+отвечали, а Grafana вернула `Connection refused`: при первом запуске она просто
+не успела открыть порт `3000`. Я добавила ожидание портов `9216`, `9090` и `3000`
 до 90 секунд.
 
-После этого HTTP-проверки всех трёх сервисов прошли, но последняя проверка искала
-строго строку `mongodb_up 1`. У установленной версии exporter метрика содержит
-дополнительную метку:
+После этого все три адреса отвечали, но моя проверка искала строго
+`mongodb_up 1`. На самом деле exporter отдавал строку с дополнительной меткой:
 
 ```text
 mongodb_up{cluster_role="mongod"} 1
 ```
 
-Значение `1` уже означало, что exporter видит MongoDB. Я исправила регулярное
-выражение, чтобы оно учитывало метки. Повторная проверка завершилась успешно:
+Значение `1` означало, что всё работает, просто проверка была слишком строгой. Я
+исправила регулярное выражение, и она прошла:
 
 ```text
 mongo-lab : ok=1 changed=0 unreachable=0 failed=0
 ```
 
-### Что ещё осталось
+В Grafana после этого всё равно сначала была заполнена только панель
+`MongoDB status`, а остальные показывали `No data`. Оказалось, что exporter 0.53
+по умолчанию не собирает диагностические метрики. Я добавила в systemd-службу
+`--collector.diagnosticdata`, перезапустила exporter, и остальные графики тоже
+появились.
 
-На текущем этапе осталось выполнить и записать результаты:
+### Нагрузочное тестирование
 
-- влияние тестовой нагрузки на графики.
+Чтобы проверить графики, я запустила `playbooks/load.yml`. Две минуты он добавлял,
+читал, изменял и удалял документы в отдельной тестовой коллекции
+`university.load_test`. Обычные учебные данные при этом не менялись.
 
-Эти разделы я дополняю после фактического выполнения, а не заранее.
+До запуска нагрузки было 3 текущих подключения, MongoDB использовала примерно
+183 MB памяти. Во время теста на графиках были видны следующие изменения:
 
-## Инструкция и команды для повторения
+- текущие подключения выросли до 6;
+- скорость вставки достигла 867 операций в секунду;
+- запросы достигли 17,7 операций в секунду;
+- обновления достигли 8,67 операций в секунду;
+- удаления достигли 1,75 операции в секунду;
+- используемая память выросла примерно до 221 MB.
 
-Стенд: Ubuntu Server 24.04 ARM64 в VMware Fusion на Mac с Apple Silicon.
+Панель состояния всё это время показывала `UP`, то есть MongoDB не перестала
+отвечать во время нагрузки.
 
-## Состав стенда
+Дашборд до запуска нагрузки:
 
-- MongoDB Community 8.0, порт `27017`;
-- Percona MongoDB Exporter, порт `9216`;
-- Prometheus, порт `9090`;
-- Grafana, порт `3000`.
+![Дашборд MongoDB до нагрузки](docs/screenshots/monitoring-before-load.png)
 
-MongoDB остаётся привязана к `127.0.0.1`. С Mac наружу открывается только SSH и веб-интерфейс Grafana.
+Дашборд во время нагрузки:
 
-## Как устроена работа
+![Дашборд MongoDB во время нагрузки](docs/screenshots/monitoring-during-load.png)
 
-Основной сценарий максимально приближен к обычной эксплуатации:
+### Итог
 
-```text
-Git-репозиторий и Ansible на Mac
-              |
-              | SSH по ключу
-              v
-Ubuntu Server VM: MongoDB + exporter + Prometheus + Grafana
-```
+В итоге я развернула MongoDB без Docker, настроила её автозапуск и авторизацию,
+разобралась с ролями, сделала резервные копии и восстановление, а потом
+подключила мониторинг и посмотрела поведение базы под нагрузкой. Самое полезное
+для меня в этой работе — не просто получить успешный запуск, а разобраться с
+ошибками APT, Vault и `mongodump`, а также с настройкой метрик exporter.
 
-Репозиторий остаётся на Mac и в GitHub. Ansible передаёт на VM только нужные
-конфигурации и запускает изменения через SSH. Копировать весь проект на сервер
-через `rsync` не требуется. Пароли находятся в зашифрованном Ansible Vault и не
-попадают в Git.
-
-Это production-подобная организация процесса для одного учебного сервера.
-Настоящая отказоустойчивая production-инсталляция MongoDB обычно также требует
-несколько узлов, TLS, firewall, централизованное хранение секретов и внешнее
-хранилище резервных копий.
-
-## Первый запуск с Mac
-
-Все команды этого раздела выполняются в Terminal на Mac.
-
-### 1. Запустить VM и узнать её адрес
-
-В консоли Ubuntu выполните:
-
-```bash
-hostname -I
-```
-
-Запишите адрес VM в `inventories/lab/hosts.yml` в поле `ansible_host`.
-
-### 2. Один раз установить SSH-ключ
-
-```bash
-ssh-copy-id -i ~/.ssh/id_ed25519.pub ola@192.168.60.133
-```
-
-Замените IP, если он изменился. Пароль пользователя Ubuntu потребуется только
-на этом шаге. Проверка:
-
-```bash
-ssh ola@192.168.60.133
-exit
-ansible mongodb -m ping
-```
-
-### 3. Создать зашифрованное хранилище паролей
-
-```bash
-EDITOR=nano ansible-vault create inventories/lab/group_vars/all/vault.yml
-```
-
-Сначала задайте отдельный пароль самого Vault. Затем вставьте структуру из
-разные пароли длиной не менее 12 символов, сохраните файл сочетанием `Ctrl+O`,
-`Enter`, закройте редактор сочетанием `Ctrl+X`.
-
-Проверить, что файл действительно зашифрован:
-
-```bash
-head -n 1 inventories/lab/group_vars/all/vault.yml
-```
-
-Ожидаемое начало: `$ANSIBLE_VAULT;...`.
-
-### 4. Применить конфигурацию
-
-```bash
-ansible-playbook playbooks/provision.yml --ask-become-pass
-ansible-playbook playbooks/secure.yml --ask-become-pass --ask-vault-pass
-ansible-playbook playbooks/configure-lab.yml --ask-become-pass --ask-vault-pass
-ansible-playbook playbooks/role-demo.yml --ask-become-pass --ask-vault-pass
-ansible-playbook playbooks/monitoring.yml --ask-become-pass --ask-vault-pass
-ansible-playbook playbooks/healthcheck.yml --ask-become-pass --ask-vault-pass
-```
-
-- `BECOME password` — пароль пользователя `ola` на Ubuntu для `sudo`;
-- `Vault password` — пароль шифрования, заданный на предыдущем шаге.
-
-Повторный запуск playbook безопасен для установки и конфигурации. Playbook
-`configure-lab.yml` намеренно заново создаёт учебные данные, чтобы лабораторная
-возвращалась в известное начальное состояние.
-
-### 5. Демонстрация управления службой
-
-Этот playbook специально останавливает, запускает и перезапускает MongoDB, поэтому
-его запускают только во время демонстрации лабораторной:
-
-```bash
-ansible-playbook playbooks/service-demo.yml --ask-become-pass --ask-vault-pass
-```
-
-### 6. Резервное копирование и восстановление
-
-Создать копию `university` и общий каталог с копиями учебных баз:
-
-```bash
-ansible-playbook playbooks/backup.yml --ask-become-pass --ask-vault-pass
-```
-
-Запустите команду дважды: timestamp в имени не даст новой копии перезаписать
-предыдущую. Затем удалите и восстановите коллекцию `university.students` одним
-контролируемым демонстрационным playbook:
-
-```bash
-ansible-playbook playbooks/restore-demo.yml --ask-become-pass --ask-vault-pass
-```
-
-Копии находятся на VM в `/var/backups/mongodb-lab`. В реальной системе их также
-нужно выгружать в отдельное защищённое хранилище и регулярно проверять
-восстановление.
-
-### 7. Нагрузка и графики
-
-Откройте `http://<VM-IP>:3000`, затем запустите:
-
-```bash
-ansible-playbook playbooks/load.yml --ask-become-pass --ask-vault-pass
-```
-
-Нагрузка работает в фоне 120 секунд. На дашборде сравните соединения, операции в
-секунду и память до запуска, во время нагрузки и после завершения.
-
-## Ручное выполнение и сбор доказательств
-
-Скрипты в каталогах `scripts/` и `mongo/` сохранены для показа преподавателю и
-пошаговой проверки отдельных операций. Если запускать их напрямую, команды ниже
-выполняются на Ubuntu VM из корня копии репозитория.
-
-### 1. Установка и служба вручную
-
-```bash
-sudo ./scripts/01-install-mongodb.sh
-./scripts/02-mongodb-service.sh status
-./scripts/03-healthcheck.sh
-```
-
-Демонстрация управления службой:
-
-```bash
-sudo ./scripts/02-mongodb-service.sh stop
-./scripts/03-healthcheck.sh || true
-sudo ./scripts/02-mongodb-service.sh start
-sudo ./scripts/02-mongodb-service.sh restart
-```
-
-### 2. Администратор и авторизация
-
-Сначала создаётся администратор, пока MongoDB слушает только localhost:
-
-```bash
-read -s -p 'Admin password: ' MONGO_ADMIN_PASSWORD; echo
-export MONGO_ADMIN_PASSWORD
-mongosh --quiet --file mongo/01-create-admin.js
-unset MONGO_ADMIN_PASSWORD
-sudo ./scripts/04-enable-auth.sh
-```
-
-Подключение администратора выполняется без пароля в истории команд:
-
-```bash
-mongosh --username lab_admin --authenticationDatabase admin --password
-```
-
-### 3. Учебные данные
-
-```bash
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/02-seed-data.js
-```
-
-Создаются базы `university` и `library`.
-
-### 4. Роли и пользователи
-
-```bash
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/roles/01-create-roles.js
-```
-
-Для создания пользователей задайте пароли только в текущей оболочке:
-
-```bash
-read -s -p 'Reader password: ' READER_PASSWORD; echo
-read -s -p 'Editor password: ' EDITOR_PASSWORD; echo
-read -s -p 'Grades password: ' GRADES_PASSWORD; echo
-read -s -p 'Temporary password: ' TEMP_PASSWORD; echo
-export READER_PASSWORD EDITOR_PASSWORD GRADES_PASSWORD TEMP_PASSWORD
-
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/roles/02-create-users.js
-
-unset READER_PASSWORD EDITOR_PASSWORD GRADES_PASSWORD TEMP_PASSWORD
-```
-
-Демонстрационные операции:
-
-```bash
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/roles/03-grant-revoke-role.js
-
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/roles/04-update-role.js
-
-./scripts/roles/05-test-collection-access.sh
-
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/roles/06-delete-temp-user-role.js
-```
-
-### 5. Backup и восстановление
-
-Сначала создаются отдельные операционные пользователи:
-
-```bash
-read -s -p 'Backup password: ' BACKUP_PASSWORD; echo
-read -s -p 'Restore password: ' RESTORE_PASSWORD; echo
-export BACKUP_PASSWORD RESTORE_PASSWORD
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/03-create-backup-users.js
-unset BACKUP_PASSWORD RESTORE_PASSWORD
-```
-
-Создание копий:
-
-```bash
-./scripts/backup/01-backup-one-db.sh
-./scripts/backup/02-backup-all-study-dbs.sh
-./scripts/backup/01-backup-one-db.sh
-find backups -maxdepth 2 -print
-```
-
-Восстановление удалённой `university.students`:
-
-```bash
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --eval 'db.getSiblingDB("university").students.drop()'
-
-./scripts/backup/03-restore-students.sh backups/<timestamp>-university
-```
-
-### 6. Мониторинг
-
-```bash
-mongosh --username lab_admin --authenticationDatabase admin --password \
-  --file mongo/04-create-monitoring-user.js
-
-sudo ./scripts/monitoring/01-install-exporter.sh
-sudo ./scripts/monitoring/02-install-prometheus.sh
-sudo ./scripts/monitoring/03-install-grafana.sh
-```
-
-После установки проверьте:
-
-```bash
-curl http://127.0.0.1:9216/metrics | grep mongodb_up
-curl http://127.0.0.1:9090/-/ready
-```
-
-Grafana открывается на Mac по адресу `http://<VM-IP>:3000`.
-
-### 7. Нагрузка
-
-```bash
-./scripts/load/run-load.sh
-```
-
-Откройте дашборд с обновлением 5 секунд и сравните показатели до, во время и после нагрузки.
-
-## Безопасность
-
-- Пароли не записываются в репозиторий.
-- `.env`, backup-архивы и скриншоты с секретами исключены через `.gitignore`.
-- Не меняйте `bindIp: 127.0.0.1` без отдельной настройки firewall и авторизации.
+Готовый репозиторий: [oscuiruss/mongodb-lab](https://github.com/oscuiruss/mongodb-lab).
