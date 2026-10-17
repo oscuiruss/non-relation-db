@@ -227,6 +227,17 @@
     - name: Apply pending service restarts
       ansible.builtin.meta: flush_handlers
 
+    - name: Wait for monitoring services to open their ports
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ item }}"
+        state: started
+        timeout: 90
+      loop:
+        - 9216
+        - 9090
+        - 3000
+
     - name: Check monitoring endpoints
       ansible.builtin.uri:
         url: "{{ item }}"
@@ -239,7 +250,7 @@
     - name: Verify exporter can reach MongoDB
       ansible.builtin.shell: |
         set -o pipefail
-        curl --fail --silent http://127.0.0.1:9216/metrics | grep -E '^mongodb_up 1$'
+        curl --fail --silent http://127.0.0.1:9216/metrics | grep -E '^mongodb_up(\{[^}]*\})? 1$'
       args:
         executable: /bin/bash
       changed_when: false
