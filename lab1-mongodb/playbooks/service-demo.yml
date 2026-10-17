@@ -1,0 +1,35 @@
+---
+- name: Demonstrate MongoDB service operations for the lab
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Stop MongoDB
+      ansible.builtin.systemd_service:
+        name: mongod
+        state: stopped
+
+    - name: Confirm that MongoDB port is closed
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ mongodb_port }}"
+        state: stopped
+        timeout: 30
+
+    - name: Start MongoDB
+      ansible.builtin.systemd_service:
+        name: mongod
+        enabled: true
+        state: started
+
+    - name: Restart MongoDB
+      ansible.builtin.systemd_service:
+        name: mongod
+        state: restarted
+
+    - name: Wait until MongoDB is available again
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ mongodb_port }}"
+        timeout: 30

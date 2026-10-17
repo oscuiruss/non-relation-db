@@ -1,0 +1,105 @@
+---
+- name: Demonstrate MongoDB role management requirements
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  vars:
+    mongodb_admin_password: "{{ vault_mongo_admin_password }}"
+    mongodb_runner: "{{ mongodb_lab_remote_dir }}/run-authenticated.js"
+
+  tasks:
+    - name: Grant and revoke a role
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_runner }}"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/roles/03-grant-revoke-role.js"
+      register: mongodb_grant_revoke
+      changed_when: true
+      no_log: true
+
+    - name: Show grant and revoke result
+      ansible.builtin.debug:
+        var: mongodb_grant_revoke.stdout_lines
+
+    - name: Add and remove a privilege from an existing role
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_runner }}"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/roles/04-update-role.js"
+      register: mongodb_role_update
+      changed_when: true
+      no_log: true
+
+    - name: Show role update result
+      ansible.builtin.debug:
+        var: mongodb_role_update.stdout_lines
+
+    - name: Read the permitted university.grades collection
+      ansible.builtin.shell: |
+        mongosh --quiet --eval '
+          const university = db.getSiblingDB("university");
+          university.auth("grades_reader", process.env.GRADES_PASSWORD);
+          printjson(university.grades.findOne());
+        '
+      args:
+        executable: /bin/bash
+      environment:
+        GRADES_PASSWORD: "{{ vault_grades_password }}"
+      register: mongodb_allowed_read
+      changed_when: false
+      no_log: true
+
+    - name: Show permitted collection result
+      ansible.builtin.debug:
+        var: mongodb_allowed_read.stdout_lines
+
+    - name: Try to read the forbidden university.students collection
+      ansible.builtin.shell: |
+        mongosh --quiet --eval '
+          const university = db.getSiblingDB("university");
+          university.auth("grades_reader", process.env.GRADES_PASSWORD);
+          printjson(university.students.findOne());
+        '
+      args:
+        executable: /bin/bash
+      environment:
+        GRADES_PASSWORD: "{{ vault_grades_password }}"
+      register: mongodb_denied_read
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Verify access to university.students was denied
+      ansible.builtin.assert:
+        that: mongodb_denied_read.rc != 0
+        success_msg: Access to university.students was denied as expected.
+        fail_msg: grades_reader unexpectedly received access to university.students.
+
+    - name: Delete temporary user and role
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_runner }}"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/roles/06-delete-temp-user-role.js"
+      register: mongodb_delete_temporary
+      changed_when: true
+      no_log: true
+
+    - name: Show temporary user and role deletion
+      ansible.builtin.debug:
+        var: mongodb_delete_temporary.stdout_lines

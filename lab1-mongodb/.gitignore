@@ -1,0 +1,11 @@
+.DS_Store
+.env
+*.env
+!*.env.example
+backups/
+dump/
+*.archive
+*.archive.gz
+*.log
+.vault-password
+inventories/lab/group_vars/all/vault.yml

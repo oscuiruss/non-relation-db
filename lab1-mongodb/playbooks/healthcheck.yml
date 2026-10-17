@@ -1,0 +1,28 @@
+---
+- name: Check MongoDB service and authenticated access
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Check systemd service state
+      ansible.builtin.command: systemctl is-active mongod
+      changed_when: false
+
+    - name: Check administrator authentication and ping
+      ansible.builtin.shell: |
+        mongosh --quiet --eval '
+          const admin = db.getSiblingDB("admin");
+          admin.auth("lab_admin", process.env.MONGO_ADMIN_PASSWORD);
+          printjson(admin.runCommand({ ping: 1 }));
+        '
+      args:
+        executable: /bin/bash
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ vault_mongo_admin_password }}"
+      changed_when: false
+      no_log: true
+
+    - name: Report successful check
+      ansible.builtin.debug:
+        msg: MongoDB service is active and authenticated ping succeeded.

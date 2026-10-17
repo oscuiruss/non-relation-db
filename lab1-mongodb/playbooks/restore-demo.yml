@@ -1,0 +1,130 @@
+---
+- name: Demonstrate deletion and restoration of university.students
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  vars:
+    mongodb_backup_root: /var/backups/mongodb-lab
+
+  tasks:
+    - name: Require restore secrets
+      ansible.builtin.assert:
+        that:
+          - vault_mongo_admin_password | length >= 12
+          - vault_restore_password | length >= 12
+      no_log: true
+
+    - name: Find university database backups
+      ansible.builtin.find:
+        paths: "{{ mongodb_backup_root }}"
+        patterns: "*-university"
+        file_type: directory
+      register: mongodb_university_backups
+
+    - name: Require an existing university backup
+      ansible.builtin.assert:
+        that: mongodb_university_backups.matched | int > 0
+        fail_msg: Run playbooks/backup.yml before the restore demonstration.
+
+    - name: Select newest university backup
+      ansible.builtin.set_fact:
+        mongodb_restore_source: "{{ (mongodb_university_backups.files | sort(attribute='mtime') | last).path }}"
+
+    - name: Check that selected backup contains university.students
+      ansible.builtin.stat:
+        path: "{{ mongodb_restore_source }}/university/students.bson.gz"
+      register: mongodb_students_backup
+
+    - name: Refuse deletion when collection backup is absent
+      ansible.builtin.assert:
+        that: mongodb_students_backup.stat.isreg | default(false)
+        fail_msg: The selected backup does not contain university.students.
+
+    - name: Create protected temporary restore credentials file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: mongodb-restore-
+        suffix: .yml
+      register: mongodb_restore_config
+      no_log: true
+
+    - name: Restore with temporary protected credentials
+      block:
+        - name: Write temporary restore credentials
+          ansible.builtin.copy:
+            content: |
+              uri: "mongodb://restore_user@127.0.0.1:{{ mongodb_port }}/?authSource=admin"
+              password: {{ vault_restore_password | to_json }}
+            dest: "{{ mongodb_restore_config.path }}"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Verify restore account before deleting data
+          ansible.builtin.shell: |
+            mongosh --quiet --eval '
+              const admin = db.getSiblingDB("admin");
+              admin.auth("restore_user", process.env.RESTORE_PASSWORD);
+              print(admin.runCommand({ connectionStatus: 1 }).ok);
+            '
+          args:
+            executable: /bin/bash
+          environment:
+            RESTORE_PASSWORD: "{{ vault_restore_password }}"
+          changed_when: false
+          no_log: true
+
+        - name: Delete university.students for the demonstration
+          ansible.builtin.shell: |
+            mongosh --quiet --eval '
+              const admin = db.getSiblingDB("admin");
+              admin.auth("lab_admin", process.env.MONGO_ADMIN_PASSWORD);
+              print(db.getSiblingDB("university").students.drop());
+            '
+          args:
+            executable: /bin/bash
+          environment:
+            MONGO_ADMIN_PASSWORD: "{{ vault_mongo_admin_password }}"
+          no_log: true
+
+        - name: Restore university.students from newest backup
+          ansible.builtin.command:
+            argv:
+              - mongorestore
+              - --config
+              - "{{ mongodb_restore_config.path }}"
+              - --gzip
+              - --drop
+              - --nsInclude
+              - university.students
+              - "{{ mongodb_restore_source }}"
+          no_log: true
+      always:
+        - name: Remove temporary restore credentials
+          ansible.builtin.file:
+            path: "{{ mongodb_restore_config.path }}"
+            state: absent
+          no_log: true
+
+    - name: Verify restored document count
+      ansible.builtin.shell: |
+        mongosh --quiet --eval '
+          const admin = db.getSiblingDB("admin");
+          admin.auth("lab_admin", process.env.MONGO_ADMIN_PASSWORD);
+          print(db.getSiblingDB("university").students.countDocuments());
+        '
+      args:
+        executable: /bin/bash
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ vault_mongo_admin_password }}"
+      register: mongodb_restored_count
+      changed_when: false
+      no_log: true
+
+    - name: Report successful restore
+      ansible.builtin.debug:
+        msg: >-
+          Restored university.students from {{ mongodb_restore_source }};
+          document count is {{ mongodb_restored_count.stdout | trim }}.

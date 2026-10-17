@@ -1,0 +1,43 @@
+---
+- name: Generate observable MongoDB load
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  vars:
+    load_seconds: 120
+    load_batch_size: 100
+
+  tasks:
+    - name: Install load generator
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/load/generate-load.js"
+        dest: "{{ mongodb_lab_remote_dir }}/generate-load.js"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Start load generator in background
+      ansible.builtin.shell: |
+        mongosh --quiet --eval '
+          const admin = db.getSiblingDB("admin");
+          admin.auth("lab_admin", process.env.MONGO_ADMIN_PASSWORD);
+          load(process.env.MONGO_SCRIPT);
+        '
+      args:
+        executable: /bin/bash
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ vault_mongo_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/generate-load.js"
+        LOAD_SECONDS: "{{ load_seconds }}"
+        LOAD_BATCH_SIZE: "{{ load_batch_size }}"
+      async: "{{ load_seconds | int + 60 }}"
+      poll: 0
+      register: mongodb_load_job
+      no_log: true
+
+    - name: Report background load job
+      ansible.builtin.debug:
+        msg: >-
+          Load is running for {{ load_seconds }} seconds. Open Grafana now and
+          observe the MongoDB Lab dashboard.
