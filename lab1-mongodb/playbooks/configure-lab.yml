@@ -38,7 +38,8 @@
         dest: "{{ mongodb_lab_remote_dir }}/mongo/"
         owner: root
         group: root
-        mode: "0600"
+        mode: "u=rwX,go="
+        directory_mode: "0700"
 
     - name: Install authenticated script runner
       ansible.builtin.copy:
