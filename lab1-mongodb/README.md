@@ -308,5 +308,3 @@ mongo-lab : ok=1 changed=0 unreachable=0 failed=0
 подключила мониторинг и посмотрела поведение базы под нагрузкой. Самое полезное
 для меня в этой работе — не просто получить успешный запуск, а разобраться с
 ошибками APT, Vault и `mongodump`, а также с настройкой метрик exporter.
-
-Готовый репозиторий: [oscuiruss/mongodb-lab](https://github.com/oscuiruss/mongodb-lab).
