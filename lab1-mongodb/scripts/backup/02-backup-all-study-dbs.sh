@@ -3,18 +3,18 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-archive="$repo_root/backups/${timestamp}-all-study-dbs.archive.gz"
-mkdir -p "$(dirname "$archive")"
+backup_dir="$repo_root/backups/${timestamp}-all-study-dbs"
+mkdir -p "$backup_dir"
 
-mongodump \
-  --host 127.0.0.1 \
-  --port 27017 \
-  --username backup_user \
-  --authenticationDatabase admin \
-  --gzip \
-  --archive="$archive" \
-  --nsInclude='university.*' \
-  --nsInclude='library.*'
+for database in university library; do
+  mongodump \
+    --host 127.0.0.1 \
+    --port 27017 \
+    --username backup_user \
+    --authenticationDatabase admin \
+    --db "$database" \
+    --gzip \
+    --out "$backup_dir"
+done
 
-echo "Backup created: $archive"
-
+echo "Backup created: $backup_dir"

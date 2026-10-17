@@ -61,19 +61,20 @@
               - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-university"
           no_log: true
 
-        - name: Back up all study databases to an archive
+        - name: Back up all study databases to one directory
           ansible.builtin.command:
             argv:
               - mongodump
               - --config
               - "{{ mongodb_backup_config.path }}"
+              - --db
+              - "{{ item }}"
               - --gzip
-              - "--archive={{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-all-study-dbs.archive.gz"
-              - --nsInclude
-              - "university.*"
-              - --nsInclude
-              - "library.*"
-          no_log: true
+              - --out
+              - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-all-study-dbs"
+          loop:
+            - university
+            - library
       always:
         - name: Remove temporary backup credentials
           ansible.builtin.file:
@@ -85,4 +86,4 @@
       ansible.builtin.debug:
         msg:
           - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-university"
-          - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-all-study-dbs.archive.gz"
+          - "{{ mongodb_backup_root }}/{{ mongodb_backup_timestamp.stdout }}-all-study-dbs"
