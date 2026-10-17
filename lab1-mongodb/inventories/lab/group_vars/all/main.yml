@@ -1,0 +1,5 @@
+mongodb_major_version: "8.0"
+mongodb_ubuntu_codename: noble
+mongodb_bind_ip: 127.0.0.1
+mongodb_port: 27017
+mongodb_lab_remote_dir: /opt/mongodb-lab

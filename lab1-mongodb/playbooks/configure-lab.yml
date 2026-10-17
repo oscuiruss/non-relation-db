@@ -1,0 +1,123 @@
+---
+- name: Configure study databases, roles, and service accounts
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  vars:
+    mongodb_admin_password: "{{ vault_mongo_admin_password }}"
+
+  tasks:
+    - name: Require all lab secrets
+      ansible.builtin.assert:
+        that:
+          - item | length >= 12
+        fail_msg: Every password in the encrypted vault must be at least 12 characters.
+      loop:
+        - "{{ vault_mongo_admin_password }}"
+        - "{{ vault_reader_password }}"
+        - "{{ vault_editor_password }}"
+        - "{{ vault_grades_password }}"
+        - "{{ vault_temp_password }}"
+        - "{{ vault_backup_password }}"
+        - "{{ vault_restore_password }}"
+        - "{{ vault_monitoring_password }}"
+      no_log: true
+
+    - name: Create protected automation directory
+      ansible.builtin.file:
+        path: "{{ mongodb_lab_remote_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Transfer database configuration scripts
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../mongo/"
+        dest: "{{ mongodb_lab_remote_dir }}/mongo/"
+        owner: root
+        group: root
+        mode: "u=rwX,go="
+        directory_mode: "0700"
+
+    - name: Install authenticated script runner
+      ansible.builtin.copy:
+        src: files/run-authenticated.js
+        dest: "{{ mongodb_lab_remote_dir }}/run-authenticated.js"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Seed study data
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/run-authenticated.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/02-seed-data.js"
+      register: mongodb_seed_result
+      changed_when: true
+      no_log: true
+
+    - name: Create or update custom roles
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/run-authenticated.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/roles/01-create-roles.js"
+      changed_when: true
+      no_log: true
+
+    - name: Create or update lab users
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/run-authenticated.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/roles/02-create-users.js"
+        READER_PASSWORD: "{{ vault_reader_password }}"
+        EDITOR_PASSWORD: "{{ vault_editor_password }}"
+        GRADES_PASSWORD: "{{ vault_grades_password }}"
+        TEMP_PASSWORD: "{{ vault_temp_password }}"
+      changed_when: true
+      no_log: true
+
+    - name: Create or update backup accounts
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/run-authenticated.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/03-create-backup-users.js"
+        BACKUP_PASSWORD: "{{ vault_backup_password }}"
+        RESTORE_PASSWORD: "{{ vault_restore_password }}"
+      changed_when: true
+      no_log: true
+
+    - name: Create or update monitoring account
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/run-authenticated.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+        MONGO_SCRIPT: "{{ mongodb_lab_remote_dir }}/mongo/04-create-monitoring-user.js"
+        MONITORING_PASSWORD: "{{ vault_monitoring_password }}"
+      changed_when: true
+      no_log: true

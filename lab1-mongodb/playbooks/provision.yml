@@ -1,0 +1,85 @@
+---
+- name: Provision MongoDB server
+  hosts: mongodb
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Verify supported Ubuntu release
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_version is version('24.04', '>=')
+          - ansible_architecture in ['aarch64', 'x86_64']
+        fail_msg: This playbook supports Ubuntu 24.04+ on ARM64 or AMD64.
+
+    - name: Remove legacy MongoDB apt source created by manual installation
+      ansible.builtin.file:
+        path: "/etc/apt/sources.list.d/mongodb-org-{{ mongodb_major_version }}.list"
+        state: absent
+
+    - name: Install repository prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - python3-debian
+        state: present
+        update_cache: true
+
+    - name: Detect Debian package architecture
+      ansible.builtin.command: dpkg --print-architecture
+      register: mongodb_deb_arch
+      changed_when: false
+
+    - name: Download MongoDB signing key
+      ansible.builtin.get_url:
+        url: "https://pgp.mongodb.com/server-{{ mongodb_major_version }}.asc"
+        dest: "/usr/share/keyrings/mongodb-server-{{ mongodb_major_version }}.asc"
+        mode: "0644"
+
+    - name: Add MongoDB apt repository
+      ansible.builtin.deb822_repository:
+        name: "mongodb-org-{{ mongodb_major_version }}"
+        types:
+          - deb
+        uris:
+          - https://repo.mongodb.org/apt/ubuntu
+        suites:
+          - "{{ mongodb_ubuntu_codename }}/mongodb-org/{{ mongodb_major_version }}"
+        components:
+          - multiverse
+        architectures:
+          - "{{ mongodb_deb_arch.stdout }}"
+        signed_by: "/usr/share/keyrings/mongodb-server-{{ mongodb_major_version }}.asc"
+        state: present
+
+    - name: Refresh apt cache after repository change
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install MongoDB Community Edition
+      ansible.builtin.apt:
+        name: mongodb-org
+        state: present
+
+    - name: Enable and start MongoDB
+      ansible.builtin.systemd_service:
+        name: mongod
+        enabled: true
+        state: started
+
+    - name: Check MongoDB locally
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --eval
+          - "db.adminCommand({ ping: 1 }).ok"
+      register: mongodb_ping
+      changed_when: false
+
+    - name: Show health-check result
+      ansible.builtin.debug:
+        msg: "MongoDB ping returned {{ mongodb_ping.stdout | trim }}"

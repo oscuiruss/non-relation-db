@@ -1,0 +1,104 @@
+---
+- name: Enable MongoDB authentication and bootstrap administrator
+  hosts: mongodb
+  become: true
+  gather_facts: false
+
+  vars:
+    mongodb_admin_password: "{{ vault_mongo_admin_password }}"
+
+  handlers:
+    - name: Restart MongoDB
+      ansible.builtin.systemd_service:
+        name: mongod
+        state: restarted
+
+  tasks:
+    - name: Require administrator secret
+      ansible.builtin.assert:
+        that:
+          - mongodb_admin_password | length >= 12
+        fail_msg: Create encrypted vault.yml and set a strong administrator password.
+      no_log: true
+
+    - name: Install managed MongoDB configuration
+      ansible.builtin.template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      notify: Restart MongoDB
+
+    - name: Apply configuration before authentication check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait until MongoDB accepts local connections
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ mongodb_port }}"
+        timeout: 30
+
+    - name: Create protected working directory
+      ansible.builtin.file:
+        path: "{{ mongodb_lab_remote_dir }}/bootstrap"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Install administrator authentication check
+      ansible.builtin.copy:
+        src: files/check-admin-auth.js
+        dest: "{{ mongodb_lab_remote_dir }}/bootstrap/check-admin-auth.js"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Check whether the administrator already works
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/bootstrap/check-admin-auth.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+      register: mongodb_admin_auth
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Install one-time administrator bootstrap script
+      ansible.builtin.copy:
+        src: files/create-first-admin.js
+        dest: "{{ mongodb_lab_remote_dir }}/bootstrap/create-admin.js"
+        owner: root
+        group: root
+        mode: "0600"
+      when: mongodb_admin_auth.rc != 0
+
+    - name: Create the first administrator through localhost exception
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/bootstrap/create-admin.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+      when: mongodb_admin_auth.rc != 0
+      no_log: true
+
+    - name: Verify administrator authentication
+      ansible.builtin.command:
+        argv:
+          - mongosh
+          - --quiet
+          - --file
+          - "{{ mongodb_lab_remote_dir }}/bootstrap/check-admin-auth.js"
+      environment:
+        MONGO_ADMIN_PASSWORD: "{{ mongodb_admin_password }}"
+      changed_when: false
+      no_log: true
