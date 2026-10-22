@@ -1,0 +1,23 @@
+opensearch_version: "3.8.0"
+opensearch_prometheus_plugin_version: "3.8.0.0"
+opensearch_cluster_name: opensearch-lab
+opensearch_heap_size: 512m
+
+opensearch_hot_host: 192.168.60.135
+opensearch_warm_host: 192.168.60.134
+
+opensearch_data_stream: logs-nginx
+opensearch_rollover_size: 1mb
+opensearch_rollover_age: 1m
+opensearch_delete_age: 10m
+
+opensearch_security_users:
+  writer:
+    username: logs_writer
+    password: "{{ vault_opensearch_writer_password }}"
+  reader:
+    username: logs_reader
+    password: "{{ vault_opensearch_reader_password }}"
+  monitoring:
+    username: opensearch_monitor
+    password: "{{ vault_opensearch_monitor_password }}"
