@@ -35,3 +35,6 @@ opensearch_dashboards_user:
   username: kibanaserver
   role: kibana_server
   password: "{{ vault_opensearch_dashboards_password }}"
+
+grafana_admin_user: admin
+grafana_admin_password: "{{ vault_grafana_admin_password }}"
