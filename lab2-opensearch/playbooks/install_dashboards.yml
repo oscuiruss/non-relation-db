@@ -1,0 +1,234 @@
+---
+- name: Install and configure secured OpenSearch Dashboards
+  hosts: os-hot
+  become: true
+  gather_facts: true
+
+  vars:
+    opensearch_api_url: https://127.0.0.1:9200
+    dashboards_package_path: >-
+      /var/cache/apt/archives/opensearch-dashboards-
+      {{- opensearch_version -}}-linux-arm64.deb
+    dashboards_signature_path: >-
+      /var/cache/apt/archives/opensearch-dashboards-
+      {{- opensearch_version -}}-linux-arm64.deb.sig
+
+  pre_tasks:
+    - name: Verify ARM64 architecture before installing OpenSearch Dashboards
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['architecture'] in ['aarch64', 'arm64']
+        fail_msg: >-
+          OpenSearch Dashboards ARM64 installation was requested, but
+          {{ inventory_hostname }} uses {{ ansible_facts['architecture'] }}.
+
+    - name: Check locally generated OpenSearch Dashboards TLS files
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../files/pki/{{ item }}"
+      loop:
+        - root-ca.pem
+        - opensearch-dashboards.pem
+        - opensearch-dashboards-key.pem
+      register: dashboards_local_tls_files
+      delegate_to: localhost
+      become: false
+
+    - name: Verify that all OpenSearch Dashboards TLS files exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: >-
+          Missing {{ item.item }}. Run scripts/generate_dashboards_cert.sh first.
+      loop: "{{ dashboards_local_tls_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Verify the Dashboards service password from Ansible Vault
+      ansible.builtin.assert:
+        that:
+          - opensearch_dashboards_user.password | length >= 12
+        fail_msg: The kibanaserver password must contain at least 12 characters.
+        quiet: true
+      no_log: true
+
+  tasks:
+    - name: Create the APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the official OpenSearch signing key
+      ansible.builtin.get_url:
+        url: https://artifacts.opensearch.org/publickeys/opensearch-release.pgp
+        dest: /etc/apt/keyrings/opensearch-release.pgp
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Convert the signing key to a GPG keyring
+      ansible.builtin.command:
+        cmd: >-
+          gpg --dearmor --yes
+          --output /etc/apt/keyrings/opensearch.gpg
+          /etc/apt/keyrings/opensearch-release.pgp
+        creates: /etc/apt/keyrings/opensearch.gpg
+
+    - name: Download the OpenSearch Dashboards ARM64 Debian package
+      ansible.builtin.get_url:
+        url: >-
+          https://artifacts.opensearch.org/releases/bundle/opensearch-dashboards/
+          {{- opensearch_version -}}/opensearch-dashboards-
+          {{- opensearch_version -}}-linux-arm64.deb
+        dest: "{{ dashboards_package_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Download the OpenSearch Dashboards package signature
+      ansible.builtin.get_url:
+        url: >-
+          https://artifacts.opensearch.org/releases/bundle/opensearch-dashboards/
+          {{- opensearch_version -}}/opensearch-dashboards-
+          {{- opensearch_version -}}-linux-arm64.deb.sig
+        dest: "{{ dashboards_signature_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Verify the OpenSearch Dashboards package signature
+      ansible.builtin.command:
+        argv:
+          - gpgv
+          - --keyring
+          - /etc/apt/keyrings/opensearch.gpg
+          - "{{ dashboards_signature_path }}"
+          - "{{ dashboards_package_path }}"
+      changed_when: false
+
+    - name: Install OpenSearch Dashboards with the Security plugin
+      ansible.builtin.apt:
+        deb: "{{ dashboards_package_path }}"
+        state: present
+        policy_rc_d: 101
+
+    - name: Create the OpenSearch Dashboards service account
+      ansible.builtin.uri:
+        url: >-
+          {{ opensearch_api_url }}/_plugins/_security/api/internalusers/
+          {{- opensearch_dashboards_user.username }}
+        method: PUT
+        body_format: json
+        body:
+          password: "{{ opensearch_dashboards_user.password }}"
+          backend_roles: []
+          opendistro_security_roles:
+            - "{{ opensearch_dashboards_user.role }}"
+          attributes: {}
+          description: OpenSearch Dashboards service account
+        ca_path: /etc/opensearch/certs/root-ca.pem
+        client_cert: /etc/opensearch/certs/admin.pem
+        client_key: /etc/opensearch/certs/admin-key.pem
+        validate_certs: true
+        use_proxy: false
+        status_code:
+          - 200
+          - 201
+      no_log: true
+
+    - name: Create the OpenSearch Dashboards certificate directory
+      ansible.builtin.file:
+        path: /etc/opensearch-dashboards/certs
+        state: directory
+        owner: root
+        group: opensearch-dashboards
+        mode: "0750"
+
+    - name: Install the CA and OpenSearch Dashboards certificates
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/pki/{{ item.src }}"
+        dest: "/etc/opensearch-dashboards/certs/{{ item.dest }}"
+        owner: root
+        group: opensearch-dashboards
+        mode: "{{ item.mode }}"
+      loop:
+        - src: root-ca.pem
+          dest: root-ca.pem
+          mode: "0644"
+        - src: opensearch-dashboards.pem
+          dest: opensearch-dashboards.pem
+          mode: "0644"
+        - src: opensearch-dashboards-key.pem
+          dest: opensearch-dashboards-key.pem
+          mode: "0640"
+      notify: Restart OpenSearch Dashboards
+
+    - name: Configure HTTPS and the secured OpenSearch connection
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/opensearch_dashboards.yml.j2"
+        dest: /etc/opensearch-dashboards/opensearch_dashboards.yml
+        owner: root
+        group: opensearch-dashboards
+        mode: "0640"
+        backup: true
+      no_log: true
+      notify: Restart OpenSearch Dashboards
+
+    - name: Enable and start OpenSearch Dashboards
+      ansible.builtin.systemd_service:
+        name: opensearch-dashboards
+        enabled: true
+        state: started
+
+    - name: Apply the OpenSearch Dashboards configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the HTTPS port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 5601
+        delay: 3
+        timeout: 180
+
+    - name: Wait until the protected OpenSearch Dashboards API responds
+      ansible.builtin.uri:
+        url: https://127.0.0.1:5601/api/status
+        method: GET
+        ca_path: /etc/opensearch-dashboards/certs/root-ca.pem
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code:
+          - 200
+          - 401
+          - 503
+      register: dashboards_status
+      until: dashboards_status.status in [200, 401]
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Read the installed OpenSearch Dashboards package version
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f=${Version} opensearch-dashboards
+      register: dashboards_installed_package
+      changed_when: false
+
+    - name: Verify the installed OpenSearch Dashboards version
+      ansible.builtin.assert:
+        that:
+          - dashboards_installed_package.stdout is version(opensearch_version, '==')
+        success_msg: >-
+          OpenSearch Dashboards {{ dashboards_installed_package.stdout }} is ready at
+          https://{{ ansible_host }}:5601.
+
+  handlers:
+    - name: Restart OpenSearch Dashboards
+      ansible.builtin.systemd_service:
+        name: opensearch-dashboards
+        enabled: true
+        state: restarted

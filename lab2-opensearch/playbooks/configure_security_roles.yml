@@ -1,0 +1,149 @@
+---
+- name: Configure least-privilege OpenSearch roles and users
+  hosts: os-hot
+  become: true
+  gather_facts: false
+
+  vars:
+    opensearch_api_url: https://127.0.0.1:9200
+    opensearch_admin_ca: /etc/opensearch/certs/root-ca.pem
+    opensearch_admin_cert: /etc/opensearch/certs/admin.pem
+    opensearch_admin_key: /etc/opensearch/certs/admin-key.pem
+
+    opensearch_lab_roles:
+      - name: "{{ opensearch_security_users.writer.role }}"
+        description: Write log documents only to the logs-nginx data stream
+        cluster_permissions:
+          - indices:data/write/bulk*
+        index_permissions:
+          - index_patterns:
+              - "{{ opensearch_data_stream }}"
+            allowed_actions:
+              - index
+
+      - name: "{{ opensearch_security_users.reader.role }}"
+        description: Read documents only from indexes and data streams matching logs*
+        cluster_permissions: []
+        index_permissions:
+          - index_patterns:
+              - logs*
+            allowed_actions:
+              - read
+
+      - name: "{{ opensearch_security_users.monitoring.role }}"
+        description: Read cluster and node health metrics without access to log documents
+        cluster_permissions:
+          - cluster:monitor/health
+          - cluster:monitor/main
+          - cluster:monitor/state
+          - cluster:monitor/stats
+          - cluster:monitor/nodes/info
+          - cluster:monitor/nodes/liveness
+          - cluster:monitor/nodes/stats
+          - cluster:monitor/nodes/usage
+        index_permissions: []
+
+  tasks:
+    - name: Verify that all Vault passwords meet the Security plugin policy
+      ansible.builtin.assert:
+        that:
+          - item.value.password | length >= 16
+          - item.value.password is regex('.*[a-z].*')
+          - item.value.password is regex('.*[A-Z].*')
+          - item.value.password is regex('.*[0-9].*')
+          - item.value.password is regex('.*[^A-Za-z0-9].*')
+        fail_msg: >-
+          The password for {{ item.value.username }} must contain at least 16
+          characters, including uppercase and lowercase letters, a digit, and
+          a special character. Use an unpredictable password because OpenSearch
+          also checks its strength.
+        quiet: true
+      loop: "{{ opensearch_security_users | dict2items }}"
+      loop_control:
+        label: "{{ item.value.username }}"
+      no_log: true
+
+    - name: Create or update the least-privilege roles
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_plugins/_security/api/roles/{{ item.name }}"
+        method: PUT
+        body_format: json
+        body:
+          cluster_permissions: "{{ item.cluster_permissions }}"
+          index_permissions: "{{ item.index_permissions }}"
+          tenant_permissions: []
+          description: "{{ item.description }}"
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        status_code:
+          - 200
+          - 201
+      loop: "{{ opensearch_lab_roles }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create or update the internal users and assign their roles
+      ansible.builtin.uri:
+        url: >-
+          {{ opensearch_api_url }}/_plugins/_security/api/internalusers/{{ item.value.username }}
+        method: PUT
+        body_format: json
+        body:
+          password: "{{ item.value.password }}"
+          backend_roles: []
+          opendistro_security_roles: >-
+            {{ [item.value.role] + (item.value.additional_roles | default([])) }}
+          attributes: {}
+          description: "OpenSearch lab {{ item.key }} user"
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        status_code:
+          - 200
+          - 201
+      loop: "{{ opensearch_security_users | dict2items }}"
+      no_log: true
+
+    - name: Authenticate each user and read its effective roles
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_plugins/_security/authinfo"
+        method: GET
+        url_username: "{{ item.value.username }}"
+        url_password: "{{ item.value.password }}"
+        force_basic_auth: true
+        ca_path: "{{ opensearch_admin_ca }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      loop: "{{ opensearch_security_users | dict2items }}"
+      register: opensearch_user_auth_checks
+      no_log: true
+
+    - name: Verify that every user received exactly its intended roles
+      ansible.builtin.assert:
+        that:
+          - item.item.value.role in item.json.roles
+          - >-
+            item.json.roles | sort ==
+            ([item.item.value.role] +
+            (item.item.value.additional_roles | default([]))) | sort
+        fail_msg: >-
+          A user authenticated successfully but did not receive exactly its intended roles.
+        quiet: true
+      loop: "{{ opensearch_user_auth_checks.results }}"
+      loop_control:
+        label: "{{ item.item.value.username }} -> {{ item.item.value.role }}"
+
+    - name: Report the configured role model
+      ansible.builtin.debug:
+        msg:
+          - "{{ opensearch_security_users.writer.username }} can write only to {{ opensearch_data_stream }}."
+          - "{{ opensearch_security_users.reader.username }} can use Dashboards and read only logs*."
+          - "{{ opensearch_security_users.monitoring.username }} can read cluster and node metrics only."
+          - Passwords were read from Ansible Vault and were not printed.
