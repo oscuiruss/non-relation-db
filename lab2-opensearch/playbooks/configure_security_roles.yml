@@ -41,6 +41,7 @@
           - cluster:monitor/nodes/liveness
           - cluster:monitor/nodes/stats
           - cluster:monitor/nodes/usage
+          - cluster:monitor/prometheus/metrics
         index_permissions: []
 
   tasks:

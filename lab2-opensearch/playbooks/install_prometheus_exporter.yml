@@ -1,0 +1,146 @@
+---
+- name: Install the OpenSearch Prometheus exporter on every node
+  hosts: opensearch_nodes
+  become: true
+  gather_facts: false
+  serial: 1
+
+  vars:
+    prometheus_exporter_plugin_name: prometheus-exporter
+    prometheus_exporter_plugin_url: >-
+      https://github.com/opensearch-project/opensearch-prometheus-exporter/releases/download/
+      {{- opensearch_prometheus_plugin_version -}}/prometheus-exporter-
+      {{- opensearch_prometheus_plugin_version -}}.zip
+
+  tasks:
+    - name: Verify that the plugin version matches OpenSearch exactly
+      ansible.builtin.assert:
+        that:
+          - opensearch_prometheus_plugin_version == opensearch_version ~ '.0'
+        fail_msg: >-
+          OpenSearch plugins must match the OpenSearch version. Expected
+          {{ opensearch_version }}.0, got {{ opensearch_prometheus_plugin_version }}.
+        quiet: true
+
+    - name: Read the currently installed OpenSearch plugins
+      ansible.builtin.command:
+        argv:
+          - /usr/share/opensearch/bin/opensearch-plugin
+          - list
+      environment:
+        OPENSEARCH_JAVA_HOME: /usr/share/opensearch/jdk
+      register: installed_opensearch_plugins
+      changed_when: false
+
+    - name: Install the matching Prometheus exporter plugin
+      ansible.builtin.command:
+        argv:
+          - /usr/share/opensearch/bin/opensearch-plugin
+          - install
+          - --batch
+          - "{{ prometheus_exporter_plugin_url }}"
+      environment:
+        OPENSEARCH_JAVA_HOME: /usr/share/opensearch/jdk
+      when: prometheus_exporter_plugin_name not in installed_opensearch_plugins.stdout_lines
+      notify: Restart OpenSearch
+
+    - name: Disable high-cardinality index metrics for the laboratory
+      ansible.builtin.lineinfile:
+        path: /etc/opensearch/opensearch.yml
+        regexp: '^prometheus\.indices:'
+        line: 'prometheus.indices: false'
+        owner: root
+        group: opensearch
+        mode: "0640"
+      notify: Restart OpenSearch
+
+    - name: Disable exporter access to cluster settings
+      ansible.builtin.lineinfile:
+        path: /etc/opensearch/opensearch.yml
+        regexp: '^prometheus\.cluster\.settings:'
+        line: 'prometheus.cluster.settings: false'
+        owner: root
+        group: opensearch
+        mode: "0640"
+      notify: Restart OpenSearch
+
+    - name: Export only the local node statistics from each endpoint
+      ansible.builtin.lineinfile:
+        path: /etc/opensearch/opensearch.yml
+        regexp: '^prometheus\.nodes\.filter:'
+        line: 'prometheus.nodes.filter: "_local"'
+        owner: root
+        group: opensearch
+        mode: "0640"
+      notify: Restart OpenSearch
+
+    - name: Apply the plugin installation and configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the local OpenSearch HTTPS port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 9200
+        delay: 3
+        timeout: 180
+
+    - name: Wait for both nodes to form the cluster again
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9200/_cluster/health
+        method: GET
+        url_username: "{{ opensearch_security_users.monitoring.username }}"
+        url_password: "{{ opensearch_security_users.monitoring.password }}"
+        force_basic_auth: true
+        ca_path: /etc/opensearch/certs/root-ca.pem
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: exporter_cluster_health
+      until:
+        - exporter_cluster_health.json.number_of_nodes | default(0) | int == 2
+        - exporter_cluster_health.json.status | default('red') in ['green', 'yellow']
+      retries: 60
+      delay: 3
+      changed_when: false
+      no_log: true
+
+    - name: Verify the protected Prometheus metrics endpoint
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9200/_prometheus/metrics
+        method: GET
+        url_username: "{{ opensearch_security_users.monitoring.username }}"
+        url_password: "{{ opensearch_security_users.monitoring.password }}"
+        force_basic_auth: true
+        ca_path: /etc/opensearch/certs/root-ca.pem
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: prometheus_metrics_response
+      retries: 10
+      delay: 3
+      until: prometheus_metrics_response.status == 200
+      changed_when: false
+      no_log: true
+
+    - name: Confirm that OpenSearch metrics were returned
+      ansible.builtin.assert:
+        that:
+          - "'opensearch_cluster_status' in prometheus_metrics_response.content"
+          - "'opensearch_jvm_mem_heap_used_percent' in prometheus_metrics_response.content"
+          - "'opensearch_fs_path_free_bytes' in prometheus_metrics_response.content"
+        fail_msg: The endpoint responded, but the expected OpenSearch metrics are missing.
+        quiet: true
+
+    - name: Report the working exporter endpoint
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} exposes protected OpenSearch metrics at
+          https://127.0.0.1:9200/_prometheus/metrics.
+
+  handlers:
+    - name: Restart OpenSearch
+      ansible.builtin.systemd_service:
+        name: opensearch
+        state: restarted
