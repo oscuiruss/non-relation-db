@@ -1,0 +1,43 @@
+cluster.name: {{ opensearch_cluster_name }}
+node.name: {{ inventory_hostname }}
+node.roles: [cluster_manager, data, ingest]
+node.attr.temp: {{ opensearch_tier }}
+
+path.data: /var/lib/opensearch
+path.logs: /var/log/opensearch
+
+network.bind_host:
+  - 127.0.0.1
+  - {{ ansible_host }}
+network.publish_host: {{ ansible_host }}
+http.port: 9200
+transport.port: 9300
+
+discovery.seed_hosts:
+  - {{ opensearch_hot_host }}
+  - {{ opensearch_warm_host }}
+cluster.initial_cluster_manager_nodes:
+  - os-hot
+  - os-warm
+
+plugins.security.ssl.transport.pemcert_filepath: certs/{{ inventory_hostname }}.pem
+plugins.security.ssl.transport.pemkey_filepath: certs/{{ inventory_hostname }}-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: certs/root-ca.pem
+transport.ssl.enforce_hostname_verification: true
+transport.ssl.resolve_hostname: true
+
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: certs/{{ inventory_hostname }}.pem
+plugins.security.ssl.http.pemkey_filepath: certs/{{ inventory_hostname }}-key.pem
+plugins.security.ssl.http.pemtrustedcas_filepath: certs/root-ca.pem
+plugins.security.ssl.http.clientauth_mode: OPTIONAL
+
+plugins.security.authcz.admin_dn:
+  - CN=opensearch-admin,OU=Security,O=OpenSearch Lab,C=RU
+plugins.security.nodes_dn:
+  - CN=os-hot,OU=Nodes,O=OpenSearch Lab,C=RU
+  - CN=os-warm,OU=Nodes,O=OpenSearch Lab,C=RU
+
+plugins.security.restapi.roles_enabled:
+  - all_access
+  - security_rest_api_access

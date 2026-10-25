@@ -1,0 +1,88 @@
+---
+- name: Prepare Ubuntu hosts for OpenSearch
+  hosts: opensearch_nodes
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Verify supported Ubuntu release and CPU architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version is version('24.04', '>=')
+          - ansible_architecture in ['aarch64', 'arm64']
+        fail_msg: >-
+          This lab expects Ubuntu 24.04 or newer on ARM64, but detected
+          {{ ansible_distribution }} {{ ansible_distribution_version }}
+          on {{ ansible_architecture }}.
+        success_msg: >-
+          {{ inventory_hostname }} runs supported Ubuntu
+          {{ ansible_distribution_version }} on {{ ansible_architecture }}.
+
+  tasks:
+    - name: Set the hostname from the Ansible inventory
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Add both OpenSearch nodes to local name resolution
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} OPENSEARCH LAB NODES"
+        block: |
+          {{ opensearch_hot_host }} os-hot
+          {{ opensearch_warm_host }} os-warm
+
+    - name: Install base administration packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - jq
+          - openssl
+          - unzip
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Configure the virtual memory map limit required by OpenSearch
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-opensearch.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          vm.max_map_count=262144
+      notify: Apply kernel parameters
+
+    - name: Disable swap immediately when it is active
+      ansible.builtin.command: swapoff -a
+      when: ansible_swaptotal_mb | int > 0
+      changed_when: true
+
+    - name: Disable swap after future reboots
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^(?!#)(.*\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Apply changed kernel parameters before validation
+      ansible.builtin.meta: flush_handlers
+
+    - name: Read the active virtual memory map limit
+      ansible.builtin.command: sysctl -n vm.max_map_count
+      register: opensearch_map_count
+      changed_when: false
+
+    - name: Verify host preparation
+      ansible.builtin.assert:
+        that:
+          - opensearch_map_count.stdout | int >= 262144
+        success_msg: >-
+          {{ inventory_hostname }} is ready; vm.max_map_count is
+          {{ opensearch_map_count.stdout }}.
+
+  handlers:
+    - name: Apply kernel parameters
+      ansible.builtin.command: sysctl --system
+      changed_when: true

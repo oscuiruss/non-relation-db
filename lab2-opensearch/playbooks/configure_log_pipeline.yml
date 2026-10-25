@@ -1,0 +1,553 @@
+---
+- name: Configure the Nginx JSON log pipeline and OpenSearch lifecycle
+  hosts: os-hot
+  become: true
+  gather_facts: true
+
+  vars:
+    opensearch_api_url: https://127.0.0.1:9200
+    opensearch_admin_ca: /etc/opensearch/certs/root-ca.pem
+    opensearch_admin_cert: /etc/opensearch/certs/admin.pem
+    opensearch_admin_key: /etc/opensearch/certs/admin-key.pem
+    fluent_bit_repository_key: https://packages.fluentbit.io/fluentbit.key
+    fluent_bit_key_source: /usr/share/keyrings/fluentbit-keyring.asc
+    fluent_bit_keyring: /usr/share/keyrings/fluentbit-keyring.gpg
+    fluent_bit_key_fingerprint: C3C0A28534B9293EAF51FABD9F9DDC083888C1CD
+
+  pre_tasks:
+    - name: Verify the target operating system and architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_release == 'noble'
+          - ansible_architecture in ['aarch64', 'arm64']
+        fail_msg: >-
+          This playbook expects Ubuntu 24.04 Noble on ARM64, but found
+          {{ ansible_distribution }} {{ ansible_distribution_release }}
+          on {{ ansible_architecture }}.
+
+    - name: Verify the writer password from Ansible Vault
+      ansible.builtin.assert:
+        that:
+          - opensearch_security_users.writer.password | length >= 16
+        fail_msg: The logs_writer password is missing from Ansible Vault.
+        quiet: true
+      no_log: true
+
+  tasks:
+    - name: Install Nginx and repository tools
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - nginx
+          - python3-debian
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Download the Fluent Bit repository signing key
+      ansible.builtin.get_url:
+        url: "{{ fluent_bit_repository_key }}"
+        dest: "{{ fluent_bit_key_source }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: fluent_bit_key_download
+
+    - name: Check the Fluent Bit binary keyring
+      ansible.builtin.stat:
+        path: "{{ fluent_bit_keyring }}"
+      register: fluent_bit_keyring_file
+
+    - name: Read the Fluent Bit repository key fingerprint
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --batch
+          - --show-keys
+          - --with-colons
+          - "{{ fluent_bit_key_source }}"
+      register: fluent_bit_key_details
+      changed_when: false
+
+    - name: Verify the Fluent Bit repository key fingerprint
+      ansible.builtin.assert:
+        that:
+          - fluent_bit_key_fingerprint in fluent_bit_key_details.stdout
+        fail_msg: The downloaded Fluent Bit repository signing key has an unexpected fingerprint.
+        quiet: true
+
+    - name: Convert the Fluent Bit signing key to a binary keyring
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --batch
+          - --yes
+          - --dearmor
+          - --output
+          - "{{ fluent_bit_keyring }}"
+          - "{{ fluent_bit_key_source }}"
+      when: fluent_bit_key_download.changed or not fluent_bit_keyring_file.stat.exists
+      changed_when: true
+
+    - name: Configure the signed Fluent Bit APT repository
+      ansible.builtin.deb822_repository:
+        name: fluent-bit
+        types:
+          - deb
+        uris:
+          - https://packages.fluentbit.io/ubuntu/noble
+        suites:
+          - noble
+        components:
+          - main
+        architectures:
+          - arm64
+        signed_by: "{{ fluent_bit_keyring }}"
+        state: present
+
+    - name: Install Fluent Bit
+      ansible.builtin.apt:
+        name: fluent-bit
+        state: present
+        update_cache: true
+        policy_rc_d: 101
+
+    - name: Create the laboratory web root
+      ansible.builtin.file:
+        path: /var/www/opensearch-lab
+        state: directory
+        owner: root
+        group: www-data
+        mode: "0755"
+
+    - name: Install the laboratory web page
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/nginx-index.html.j2"
+        dest: /var/www/opensearch-lab/index.html
+        owner: root
+        group: www-data
+        mode: "0644"
+      notify: Reload Nginx
+
+    - name: Configure Nginx JSON access logging
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/nginx-lab.conf.j2"
+        dest: /etc/nginx/sites-available/opensearch-lab
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload Nginx
+
+    - name: Enable the laboratory Nginx site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/opensearch-lab
+        dest: /etc/nginx/sites-enabled/opensearch-lab
+        state: link
+      notify: Reload Nginx
+
+    - name: Disable the default Nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    - name: Validate the Nginx configuration
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Enable and start Nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Read the existing ISM policy
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_plugins/_ism/policies/{{ opensearch_ism_policy }}"
+        method: GET
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code:
+          - 200
+          - 404
+      register: existing_ism_policy
+
+    - name: Create or update the hot-warm-delete ISM policy
+      ansible.builtin.uri:
+        url: >-
+          {{ opensearch_api_url }}/_plugins/_ism/policies/{{ opensearch_ism_policy }}
+          {%- if existing_ism_policy.status == 200 -%}
+          ?if_seq_no={{ existing_ism_policy.json._seq_no }}&if_primary_term={{ existing_ism_policy.json._primary_term }}
+          {%- endif -%}
+        method: PUT
+        body_format: json
+        body:
+          policy:
+            description: >-
+              Nginx logs roll over after 1 minute or 1 MB, move from hot to warm,
+              and are deleted at 10 minutes of index age.
+            default_state: hot
+            states:
+              - name: hot
+                actions:
+                  - retry:
+                      count: 3
+                      backoff: exponential
+                      delay: 1m
+                    rollover:
+                      min_index_age: "{{ opensearch_rollover_age }}"
+                      min_size: "{{ opensearch_rollover_size }}"
+                      prevent_empty_rollover: true
+                transitions:
+                  - state_name: warm
+              - name: warm
+                actions:
+                  - retry:
+                      count: 3
+                      backoff: exponential
+                      delay: 1m
+                    allocation:
+                      require:
+                        temp: warm
+                      wait_for: true
+                transitions:
+                  - state_name: delete
+                    conditions:
+                      min_index_age: "{{ opensearch_delete_age }}"
+              - name: delete
+                actions:
+                  - retry:
+                      count: 3
+                      backoff: exponential
+                      delay: 1m
+                    delete: {}
+                transitions: []
+            ism_template:
+              index_patterns:
+                - "{{ opensearch_data_stream }}"
+              priority: 100
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        status_code:
+          - 200
+          - 201
+
+    - name: Run ISM jobs every minute for the laboratory demonstration
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_cluster/settings"
+        method: PUT
+        body_format: json
+        body:
+          persistent:
+            plugins.index_state_management.job_interval: 1
+            plugins.index_state_management.jitter: 0
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        status_code: 200
+
+    - name: Create or update the Nginx data stream template
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_index_template/{{ opensearch_index_template }}"
+        method: PUT
+        body_format: json
+        body:
+          index_patterns:
+            - "{{ opensearch_data_stream }}"
+          priority: 200
+          data_stream:
+            timestamp_field:
+              name: "@timestamp"
+          template:
+            settings:
+              number_of_shards: 1
+              number_of_replicas: 0
+              index.routing.allocation.require.temp: hot
+            mappings:
+              properties:
+                "@timestamp":
+                  type: date
+                remote_addr:
+                  type: ip
+                request_method:
+                  type: keyword
+                request_uri:
+                  type: keyword
+                  ignore_above: 2048
+                server_protocol:
+                  type: keyword
+                status:
+                  type: integer
+                body_bytes_sent:
+                  type: long
+                request_time:
+                  type: float
+                http_referer:
+                  type: keyword
+                  ignore_above: 2048
+                http_user_agent:
+                  type: text
+                  fields:
+                    keyword:
+                      type: keyword
+                      ignore_above: 512
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        status_code: 200
+
+    - name: Wait for both OpenSearch nodes before creating the data stream
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_cluster/health"
+        method: GET
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+        timeout: 60
+      register: opensearch_health_before_data_stream
+      until:
+        - opensearch_health_before_data_stream.json.number_of_nodes | int == 2
+        - opensearch_health_before_data_stream.json.status in ['green', 'yellow']
+      retries: 12
+      delay: 5
+
+    - name: Check whether the Nginx data stream exists
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_data_stream/{{ opensearch_data_stream }}"
+        method: GET
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        status_code:
+          - 200
+          - 404
+      register: existing_data_stream
+
+    - name: Create the Nginx data stream
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_data_stream/{{ opensearch_data_stream }}"
+        method: PUT
+        body_format: json
+        body: {}
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        status_code: 200
+        timeout: 180
+      when: existing_data_stream.status == 404
+
+    - name: Read the Nginx data stream information
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_data_stream/{{ opensearch_data_stream }}"
+        method: GET
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+        timeout: 60
+      register: nginx_data_stream_status
+      until: nginx_data_stream_status.status == 200
+      retries: 12
+      delay: 5
+
+    - name: Remember the current data stream write index
+      ansible.builtin.set_fact:
+        nginx_write_index: >-
+          {{ (nginx_data_stream_status.json.data_streams[0].indices | last).index_name }}
+
+    - name: Check whether ISM already manages the write index
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_plugins/_ism/explain/{{ nginx_write_index }}"
+        method: GET
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: nginx_initial_ism_status
+
+    - name: Attach the ISM policy to the first backing index without waiting for the sweep
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_plugins/_ism/add/{{ nginx_write_index }}"
+        method: POST
+        body_format: json
+        body:
+          policy_id: "{{ opensearch_ism_policy }}"
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: nginx_ism_attachment
+      when: nginx_initial_ism_status.json.total_managed_indices | default(0) | int == 0
+
+    - name: Verify that the ISM policy is assigned to the first backing index
+      ansible.builtin.assert:
+        that:
+          - >-
+            (nginx_initial_ism_status.json.total_managed_indices | default(0) | int > 0)
+            or
+            (
+              nginx_ism_attachment.json.updated_indices | default(0) | int == 1
+              and not (nginx_ism_attachment.json.failures | default(true))
+            )
+        fail_msg: ISM did not accept the lifecycle policy for the Nginx backing index.
+        quiet: true
+
+    - name: Simulate the ISM policy against the backing index
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/_plugins/_ism/simulate"
+        method: POST
+        body_format: json
+        body:
+          policy_id: "{{ opensearch_ism_policy }}"
+          indices:
+            - "{{ nginx_write_index }}"
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: nginx_ism_simulation
+
+    - name: Verify the initial lifecycle state and action
+      ansible.builtin.assert:
+        that:
+          - nginx_ism_simulation.json.simulate_results[0].current_state == 'hot'
+          - nginx_ism_simulation.json.simulate_results[0].current_action == 'rollover'
+        fail_msg: The Nginx backing index does not start in the expected hot rollover state.
+        quiet: true
+
+    - name: Install the OpenSearch CA for Fluent Bit
+      ansible.builtin.copy:
+        src: /etc/opensearch/certs/root-ca.pem
+        dest: /etc/fluent-bit/root-ca.pem
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart Fluent Bit
+
+    - name: Create the Fluent Bit state directory
+      ansible.builtin.file:
+        path: /var/lib/fluent-bit
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the Nginx JSON parser for Fluent Bit
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/nginx-json-parsers.conf.j2"
+        dest: /etc/fluent-bit/nginx-json-parsers.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart Fluent Bit
+
+    - name: Configure Fluent Bit to send Nginx logs to the data stream
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/fluent-bit.conf.j2"
+        dest: /etc/fluent-bit/fluent-bit.conf
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      notify: Restart Fluent Bit
+
+    - name: Validate the Fluent Bit configuration
+      ansible.builtin.command:
+        argv:
+          - /opt/fluent-bit/bin/fluent-bit
+          - --dry-run
+          - --config
+          - /etc/fluent-bit/fluent-bit.conf
+      changed_when: false
+      no_log: true
+
+    - name: Enable and start Fluent Bit
+      ansible.builtin.systemd_service:
+        name: fluent-bit
+        enabled: true
+        state: started
+
+    - name: Apply all service configuration changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Generate several Nginx access log records
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ nginx_listen_port }}/?lab_request={{ item }}"
+        method: GET
+        status_code: 200
+      loop:
+        - one
+        - two
+        - three
+
+    - name: Wait until Fluent Bit sends at least one document
+      ansible.builtin.uri:
+        url: "{{ opensearch_api_url }}/{{ opensearch_data_stream }}/_count"
+        method: GET
+        ca_path: "{{ opensearch_admin_ca }}"
+        client_cert: "{{ opensearch_admin_cert }}"
+        client_key: "{{ opensearch_admin_key }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: nginx_log_count
+      until: nginx_log_count.json.count | int > 0
+      retries: 30
+      delay: 2
+
+    - name: Report the working Nginx log pipeline
+      ansible.builtin.debug:
+        msg:
+          - "Nginx is serving the laboratory page on port {{ nginx_listen_port }}."
+          - "Fluent Bit sent {{ nginx_log_count.json.count }} document(s) to {{ opensearch_data_stream }}."
+          - "The data stream generation is {{ nginx_data_stream_status.json.data_streams[0].generation }}."
+          - "ISM policy {{ opensearch_ism_policy }} is assigned to {{ nginx_write_index }}."
+          - "The simulated initial state is hot and the current action is rollover."
+          - "Rollover: {{ opensearch_rollover_age }} OR {{ opensearch_rollover_size }}; deletion: {{ opensearch_delete_age }}."
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Fluent Bit
+      ansible.builtin.systemd_service:
+        name: fluent-bit
+        state: restarted

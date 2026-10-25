@@ -1,0 +1,12 @@
+# Locally generated private keys and certificates must not be committed.
+files/pki/
+
+# Ansible retry files.
+*.retry
+
+# Local backup files created while fixing the lab.
+*.before-*
+
+# A local Vault password file is optional and must never be committed.
+.vault-password
+*.vault-password

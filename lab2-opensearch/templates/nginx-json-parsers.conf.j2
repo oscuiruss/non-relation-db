@@ -1,0 +1,7 @@
+[PARSER]
+    Name        nginx_json
+    Format      json
+    Time_Key    @timestamp
+    Time_Format %Y-%m-%dT%H:%M:%S%z
+    Time_Keep   On
+    Types       status:integer body_bytes_sent:integer request_time:float
