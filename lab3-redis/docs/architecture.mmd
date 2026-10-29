@@ -1,0 +1,38 @@
+flowchart TB
+    subgraph clients[Источники запросов]
+        direction LR
+        user[Пользователь]
+        payment[Платёжный контур]
+        admin[Администратор]
+        load[k6]
+    end
+
+    subgraph service[Приложение]
+        api[Loyalty API — FastAPI]
+    end
+
+    subgraph datastore[Хранилища]
+        direction LR
+        redis[(Redis — кэш)]
+        postgres[(PostgreSQL — основная БД)]
+    end
+
+    subgraph monitoring[Мониторинг]
+        direction LR
+        exporter[Redis Exporter]
+        prometheus[Prometheus]
+        grafana[Grafana]
+    end
+
+    user -->|Запрос акций| api
+    payment -->|Покупка| api
+    admin -->|Изменение rollout| api
+    load -->|Нагрузочный тест| api
+
+    api -->|Готовый ответ и версии| redis
+    api -->|Профили, акции, лимиты, покупки| postgres
+
+    redis -.->|Метрики Redis| exporter
+    exporter -->|Сбор раз в 5 секунд| prometheus
+    api -.->|Метрики приложения| prometheus
+    prometheus -->|PromQL| grafana
