@@ -1,0 +1,31 @@
+Loyalty Redis Lab — k6 result
+Date: 2026-10-29
+Environment: local Docker Desktop, ARM64
+
+Scenarios:
+  cashback_reads: ramping 0 -> 30 -> 80 -> 0 VUs, 2m10s
+  transactions: 5 iterations/s, 2m00s
+
+Checks:
+  cashback read is 200: passed
+  transaction is 200: passed
+
+Summary:
+  http_reqs:                    106081 (815.702899/s)
+  cache_reads:                  105481 (811.089239/s)
+  transaction_writes:          600
+  http_req_failed:              0.00% (0/106081)
+  checks:                       100.00% (106081/106081)
+
+  all requests avg:             7.52 ms
+  all requests p(90):           14.37 ms
+  all requests p(95):           19.37 ms
+  all requests max:             105.40 ms
+
+  cashback reads p(95):         19.38 ms (threshold < 200 ms: passed)
+  transactions p(95):           17.93 ms (threshold < 500 ms: passed)
+
+Post-test Prometheus values:
+  application cache hit ratio:  0.991253920574607 (99.13%)
+  redis_memory_used_bytes:      1776784 (1.78 MB)
+  redis_evicted_keys_total:     0
