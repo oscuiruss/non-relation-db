@@ -27,7 +27,7 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "fieldConfig": {"defaults": {"color": {"fixedColor": "green", "mode": "fixed"}, "unit": "ops"}},
       "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
       "id": 3,
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
@@ -74,20 +74,44 @@
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {"defaults": {"min": 0, "unit": "ops"}},
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 13},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
       "id": 7,
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi"}},
       "targets": [
-        {"expr": "rate(redis_commands_processed_total[1m])", "legendFormat": "operations/s", "refId": "A"}
+        {"expr": "sum by (cmd) (rate(redis_commands_total{cmd=~\"get|set|mget|setnx|del|incr|expire|eval\"}[1m]))", "legendFormat": "{{cmd}}", "refId": "A"}
       ],
-      "title": "Redis workload",
+      "title": "Redis commands per second",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {"defaults": {"unit": "short"}},
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 13},
+      "fieldConfig": {"defaults": {"color": {"fixedColor": "green", "mode": "fixed"}, "decimals": 0, "min": 0, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 13},
       "id": 8,
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true},
+      "targets": [
+        {"expr": "sum by (cmd) (increase(redis_commands_total{cmd=~\"get|set|mget|setnx|del|incr|expire|eval\"}[$__range]))", "instant": true, "legendFormat": "{{cmd}}", "refId": "A"}
+      ],
+      "title": "Redis command count",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"decimals": 3, "min": 0, "unit": "ms"}},
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 13},
+      "id": 10,
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true},
+      "targets": [
+        {"expr": "1000 * sum by (cmd) (increase(redis_commands_duration_seconds_total{cmd=~\"get|set|mget|setnx|del|incr|expire|eval\"}[$__range])) / sum by (cmd) (increase(redis_commands_total{cmd=~\"get|set|mget|setnx|del|incr|expire|eval\"}[$__range]))", "instant": true, "legendFormat": "{{cmd}}", "refId": "A"}
+      ],
+      "title": "Average Redis command latency",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"color": {"fixedColor": "green", "mode": "fixed"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 21},
+      "id": 11,
       "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
       "targets": [
         {"expr": "redis_connected_clients", "legendFormat": "clients now", "refId": "A"},
@@ -100,7 +124,7 @@
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "fieldConfig": {"defaults": {"unit": "s"}},
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 13},
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 21},
       "id": 9,
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
       "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(loyalty_personalization_calculation_seconds_bucket[1m])))", "legendFormat": "DB calculation p95", "refId": "A"}],
