@@ -73,27 +73,29 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {"defaults": {"unit": "short"}},
+      "fieldConfig": {"defaults": {"min": 0, "unit": "ops"}},
       "gridPos": {"h": 8, "w": 8, "x": 0, "y": 13},
       "id": 7,
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
       "targets": [
-        {"expr": "redis_connected_clients", "legendFormat": "clients", "refId": "A"},
-        {"expr": "rate(redis_rejected_connections_total[1m])", "legendFormat": "rejected/s", "refId": "B"},
-        {"expr": "rate(redis_evicted_keys_total[1m])", "legendFormat": "evicted/s", "refId": "C"}
+        {"expr": "rate(redis_commands_processed_total[1m])", "legendFormat": "operations/s", "refId": "A"}
       ],
-      "title": "Redis clients and pressure",
+      "title": "Redis workload",
       "type": "timeseries"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-      "fieldConfig": {"defaults": {"unit": "percentunit"}},
+      "fieldConfig": {"defaults": {"unit": "short"}},
       "gridPos": {"h": 8, "w": 8, "x": 8, "y": 13},
       "id": 8,
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
-      "targets": [{"expr": "rate(redis_keyspace_hits_total[1m]) / clamp_min(rate(redis_keyspace_hits_total[1m]) + rate(redis_keyspace_misses_total[1m]), 0.000001)", "legendFormat": "Redis hit ratio", "refId": "A"}],
-      "title": "Redis keyspace hit ratio",
-      "type": "timeseries"
+      "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [
+        {"expr": "redis_connected_clients", "legendFormat": "clients now", "refId": "A"},
+        {"expr": "increase(redis_rejected_connections_total[$__range])", "legendFormat": "rejected", "refId": "B"},
+        {"expr": "increase(redis_evicted_keys_total[$__range])", "legendFormat": "evicted", "refId": "C"}
+      ],
+      "title": "Redis health",
+      "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
