@@ -78,12 +78,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  renderer:
+    image: grafana/grafana-image-renderer:3.12.9
+    profiles: ["render"]
+    environment:
+      HTTP_HOST: 0.0.0.0
+      ENABLE_METRICS: "true"
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:11.5.2
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_RENDERING_SERVER_URL: http://renderer:8081/render
+      GF_RENDERING_CALLBACK_URL: http://grafana:3000/
+      GF_RENDERING_RENDER_IMAGE_TIMEOUT: "60"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
