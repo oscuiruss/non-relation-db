@@ -1,0 +1,113 @@
+name: loyalty-redis-lab
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: loyalty
+      POSTGRES_USER: loyalty
+      POSTGRES_PASSWORD: loyalty
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loyalty -d loyalty"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://loyalty:loyalty@postgres:5432/loyalty
+      REDIS_URL: redis://redis:6379/0
+      CACHE_TTL_SECONDS: "60"
+      CACHE_TTL_JITTER_SECONDS: "15"
+      ADMIN_API_KEY: lab-admin-key
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  k6:
+    image: grafana/k6:0.57.0
+    profiles: ["load"]
+    environment:
+      BASE_URL: http://app:8000
+    volumes:
+      - ./load:/scripts:ro
+    command: ["run", "/scripts/load.js"]
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
