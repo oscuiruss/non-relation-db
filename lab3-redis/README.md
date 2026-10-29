@@ -28,15 +28,38 @@
 ## Как всё работает
 
 ```mermaid
-flowchart LR
-    C[Клиент] --> API[FastAPI]
-    API --> R[(Redis)]
-    API --> P[(PostgreSQL)]
-    API --> M[Prometheus]
-    R --> E[Redis exporter]
-    E --> M
-    M --> G[Grafana]
-    K[k6] --> API
+C4Container
+    title C4: контейнерная диаграмма системы лояльности
+
+    Person(user, "Пользователь", "Смотрит персональные акции")
+    System_Ext(payment, "Платёжный контур", "Передаёт покупки")
+    Person(admin, "Администратор", "Меняет процент раскатки")
+    System_Ext(k6, "k6", "Создаёт тестовую нагрузку")
+
+    System_Boundary(loyalty, "Система лояльности") {
+        Container(api, "Loyalty API", "FastAPI", "Рассчитывает персональный кэшбэк")
+        ContainerDb(redis, "Кэш", "Redis", "Хранит готовые ответы и версии")
+        ContainerDb(postgres, "Основная БД", "PostgreSQL", "Профили, акции, лимиты и покупки")
+    }
+
+    System_Boundary(monitoring, "Мониторинг") {
+        Container(exporter, "Redis exporter", "Exporter", "Отдаёт метрики Redis")
+        Container(prometheus, "Prometheus", "TSDB", "Собирает метрики")
+        Container(grafana, "Grafana", "Dashboard", "Показывает состояние системы")
+    }
+
+    Rel(user, api, "Запрашивает акции", "HTTP/JSON")
+    Rel(payment, api, "Отправляет покупку", "HTTP/JSON")
+    Rel(admin, api, "Меняет rollout", "HTTP/JSON")
+    Rel(k6, api, "Нагружает", "HTTP")
+    Rel(api, redis, "Читает и обновляет кэш", "RESP")
+    Rel(api, postgres, "Читает и сохраняет данные", "SQL")
+    Rel(exporter, redis, "Читает INFO", "RESP")
+    Rel(prometheus, exporter, "Собирает метрики", "HTTP")
+    Rel(prometheus, api, "Собирает /metrics", "HTTP")
+    Rel(grafana, prometheus, "Запрашивает метрики", "PromQL")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")
 ```
 
 Когда приходит запрос на список акций, приложение сначала смотрит в Redis. Если
