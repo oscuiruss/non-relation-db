@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: opensearch
+    scheme: https
+    metrics_path: /_prometheus/metrics
+    basic_auth:
+      username: {{ opensearch_security_users.monitoring.username | to_json }}
+      password: {{ opensearch_security_users.monitoring.password | to_json }}
+    tls_config:
+      ca_file: /etc/prometheus/root-ca.pem
+    static_configs:
+      - targets:
+          - "{{ opensearch_hot_host }}:9200"
+          - "{{ opensearch_warm_host }}:9200"

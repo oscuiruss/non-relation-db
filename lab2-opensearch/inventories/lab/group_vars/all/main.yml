@@ -1,0 +1,40 @@
+opensearch_version: "3.8.0"
+opensearch_prometheus_plugin_version: "3.8.0.0"
+opensearch_cluster_name: opensearch-lab
+opensearch_heap_size: 512m
+
+opensearch_hot_host: 192.168.60.135
+opensearch_warm_host: 192.168.60.134
+
+opensearch_data_stream: logs-nginx
+opensearch_index_template: logs-nginx-template
+opensearch_ism_policy: logs-nginx-hot-warm-delete
+opensearch_rollover_size: 1mb
+opensearch_rollover_age: 1m
+opensearch_delete_age: 10m
+
+nginx_listen_port: 80
+
+opensearch_security_users:
+  writer:
+    username: logs_writer
+    role: logs_writer_role
+    password: "{{ vault_opensearch_writer_password }}"
+  reader:
+    username: logs_reader
+    role: logs_reader_role
+    additional_roles:
+      - kibana_user
+    password: "{{ vault_opensearch_reader_password }}"
+  monitoring:
+    username: opensearch_monitor
+    role: opensearch_monitor_role
+    password: "{{ vault_opensearch_monitor_password }}"
+
+opensearch_dashboards_user:
+  username: kibanaserver
+  role: kibana_server
+  password: "{{ vault_opensearch_dashboards_password }}"
+
+grafana_admin_user: admin
+grafana_admin_password: "{{ vault_grafana_admin_password }}"

@@ -1,0 +1,320 @@
+---
+- name: Install Prometheus and Grafana for the OpenSearch laboratory
+  hosts: os-warm
+  become: true
+  gather_facts: true
+
+  vars:
+    grafana_key_url: https://apt.grafana.com/gpg-full.key
+    grafana_key_path: /etc/apt/keyrings/grafana.asc
+    grafana_key_fingerprint: B53AE77BADB630A683046005963FA27710458545
+
+  pre_tasks:
+    - name: Verify the Grafana administrator password from Ansible Vault
+      ansible.builtin.assert:
+        that:
+          - grafana_admin_password | length >= 16
+          - grafana_admin_password is regex('.*[a-z].*')
+          - grafana_admin_password is regex('.*[A-Z].*')
+          - grafana_admin_password is regex('.*[0-9].*')
+          - grafana_admin_password is regex('.*[!@#%_+=-].*')
+          - grafana_admin_password is regex('^[A-Za-z0-9!@#%_+=-]+$')
+        fail_msg: >-
+          vault_grafana_admin_password must contain at least 16 characters,
+          including uppercase and lowercase letters, a digit, and one of
+          !@#%_+=-. Use only these characters so the value is safe in grafana.ini.
+        quiet: true
+      no_log: true
+
+    - name: Check the local laboratory CA certificate
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../files/pki/root-ca.pem"
+      register: monitoring_local_ca
+      delegate_to: localhost
+      become: false
+
+    - name: Verify that the laboratory CA certificate exists
+      ansible.builtin.assert:
+        that:
+          - monitoring_local_ca.stat.exists
+        fail_msg: Missing files/pki/root-ca.pem.
+        quiet: true
+      delegate_to: localhost
+      become: false
+
+  tasks:
+    - name: Install repository and TLS prerequisites
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+          - python3-debian
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the Grafana repository key
+      ansible.builtin.get_url:
+        url: "{{ grafana_key_url }}"
+        dest: "{{ grafana_key_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Read the Grafana repository key fingerprint
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --show-keys
+          - --with-colons
+          - "{{ grafana_key_path }}"
+      register: grafana_key_details
+      changed_when: false
+
+    - name: Verify the Grafana repository key fingerprint
+      ansible.builtin.assert:
+        that:
+          - grafana_key_fingerprint in grafana_key_details.stdout
+        fail_msg: The downloaded Grafana repository key has an unexpected fingerprint.
+        quiet: true
+
+    - name: Add the official Grafana APT repository
+      ansible.builtin.deb822_repository:
+        name: grafana
+        types:
+          - deb
+        uris:
+          - https://apt.grafana.com
+        suites:
+          - stable
+        components:
+          - main
+        signed_by: "{{ grafana_key_path }}"
+        state: present
+
+    - name: Refresh the APT cache after adding Grafana
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install Prometheus and Grafana OSS without starting them yet
+      ansible.builtin.apt:
+        name:
+          - prometheus
+          - grafana
+        state: present
+        policy_rc_d: 101
+
+    - name: Install the laboratory CA for Prometheus
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/pki/root-ca.pem"
+        dest: /etc/prometheus/root-ca.pem
+        owner: root
+        group: prometheus
+        mode: "0640"
+      notify: Restart Prometheus
+
+    - name: Configure Prometheus to scrape both protected OpenSearch nodes
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/prometheus.yml.j2"
+        dest: /etc/prometheus/prometheus.yml
+        owner: root
+        group: prometheus
+        mode: "0640"
+      no_log: true
+      notify: Restart Prometheus
+
+    - name: Limit Prometheus retention and bind it to localhost
+      ansible.builtin.lineinfile:
+        path: /etc/default/prometheus
+        regexp: '^ARGS='
+        line: >-
+          ARGS="--web.listen-address=127.0.0.1:9090
+          --storage.tsdb.retention.time=1d
+          --storage.tsdb.retention.size=256MB"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart Prometheus
+
+    - name: Validate the Prometheus configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/promtool
+          - check
+          - config
+          - /etc/prometheus/prometheus.yml
+      changed_when: false
+      no_log: true
+
+    - name: Bind Grafana to localhost
+      ansible.builtin.lineinfile:
+        path: /etc/grafana/grafana.ini
+        regexp: '^\s*[;#]?\s*http_addr\s*='
+        line: 'http_addr = 127.0.0.1'
+        owner: root
+        group: grafana
+        mode: "0640"
+      notify: Restart Grafana
+
+    - name: Set the Grafana administrator name
+      ansible.builtin.lineinfile:
+        path: /etc/grafana/grafana.ini
+        regexp: '^\s*[;#]?\s*admin_user\s*='
+        line: "admin_user = {{ grafana_admin_user }}"
+        owner: root
+        group: grafana
+        mode: "0640"
+      notify: Restart Grafana
+
+    - name: Set the initial Grafana administrator password from Vault
+      ansible.builtin.lineinfile:
+        path: /etc/grafana/grafana.ini
+        regexp: '^\s*[;#]?\s*admin_password\s*='
+        line: "admin_password = {{ grafana_admin_password }}"
+        owner: root
+        group: grafana
+        mode: "0640"
+      no_log: true
+      notify: Restart Grafana
+
+    - name: Provision the Prometheus data source
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/grafana-prometheus-datasource.yml.j2"
+        dest: /etc/grafana/provisioning/datasources/prometheus.yml
+        owner: root
+        group: grafana
+        mode: "0640"
+      notify: Restart Grafana
+
+    - name: Provision the OpenSearch dashboard provider
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/grafana-dashboard-provider.yml.j2"
+        dest: /etc/grafana/provisioning/dashboards/opensearch.yml
+        owner: root
+        group: grafana
+        mode: "0640"
+      notify: Restart Grafana
+
+    - name: Create the provisioned Grafana dashboard directory
+      ansible.builtin.file:
+        path: /var/lib/grafana/dashboards
+        state: directory
+        owner: grafana
+        group: grafana
+        mode: "0750"
+
+    - name: Install the OpenSearch laboratory dashboard
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/grafana/opensearch-monitoring-dashboard.json"
+        dest: /var/lib/grafana/dashboards/opensearch-monitoring-dashboard.json
+        owner: grafana
+        group: grafana
+        mode: "0640"
+      notify: Restart Grafana
+
+    - name: Enable and start Prometheus
+      ansible.builtin.systemd_service:
+        name: prometheus
+        enabled: true
+        state: started
+
+    - name: Enable and start Grafana
+      ansible.builtin.systemd_service:
+        name: grafana-server
+        enabled: true
+        state: started
+
+    - name: Apply the Prometheus and Grafana configuration
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait until Prometheus is ready
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9090/-/ready
+        method: GET
+        use_proxy: false
+        status_code: 200
+      register: prometheus_ready
+      retries: 30
+      delay: 3
+      until: prometheus_ready.status == 200
+      changed_when: false
+
+    - name: Wait until Prometheus scrapes both OpenSearch nodes
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22opensearch%22%7D
+        method: GET
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: prometheus_targets
+      retries: 30
+      delay: 5
+      until: >-
+        prometheus_targets.json.status | default('') == 'success' and
+        prometheus_targets.json.data.result | default([]) | length == 2 and
+        prometheus_targets.json.data.result[0].value[1] == '1' and
+        prometheus_targets.json.data.result[1].value[1] == '1'
+      changed_when: false
+
+    - name: Wait until Grafana is ready
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3000/api/health
+        method: GET
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: grafana_health
+      retries: 30
+      delay: 3
+      until: grafana_health.status == 200
+      changed_when: false
+
+    - name: Verify that Grafana provisioned the OpenSearch dashboard
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:3000/api/dashboards/uid/opensearch-lab-monitoring
+        method: GET
+        url_username: "{{ grafana_admin_user }}"
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      register: grafana_dashboard
+      retries: 10
+      delay: 3
+      until: grafana_dashboard.status == 200
+      changed_when: false
+      no_log: true
+
+    - name: Clear downloaded APT packages to preserve the small laboratory disk
+      ansible.builtin.apt:
+        clean: true
+
+    - name: Report the working monitoring stack
+      ansible.builtin.debug:
+        msg:
+          - Prometheus is scraping both protected OpenSearch exporter endpoints.
+          - Grafana provisioned the OpenSearch Laboratory Monitoring dashboard.
+          - Use an SSH tunnel to open Grafana at http://127.0.0.1:3000 on the Mac.
+
+  handlers:
+    - name: Restart Prometheus
+      ansible.builtin.systemd_service:
+        name: prometheus
+        state: restarted
+
+    - name: Restart Grafana
+      ansible.builtin.systemd_service:
+        name: grafana-server
+        state: restarted

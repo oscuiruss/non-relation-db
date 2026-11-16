@@ -1,0 +1,114 @@
+---
+- name: Install OpenSearch packages without demo security configuration
+  hosts: opensearch_nodes
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Verify ARM64 architecture before installing OpenSearch
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['architecture'] in ['aarch64', 'arm64']
+        fail_msg: >-
+          OpenSearch ARM64 installation was requested, but
+          {{ inventory_hostname }} uses {{ ansible_facts['architecture'] }}.
+
+  tasks:
+    - name: Create the APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the official OpenSearch repository signing key
+      ansible.builtin.get_url:
+        url: https://artifacts.opensearch.org/publickeys/opensearch-release.pgp
+        dest: /etc/apt/keyrings/opensearch-release.pgp
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Convert the OpenSearch signing key to an APT keyring
+      ansible.builtin.command:
+        cmd: >-
+          gpg --dearmor --yes
+          --output /etc/apt/keyrings/opensearch.gpg
+          /etc/apt/keyrings/opensearch-release.pgp
+        creates: /etc/apt/keyrings/opensearch.gpg
+
+    - name: Remove the unusable OpenSearch APT repository definition
+      ansible.builtin.file:
+        path: "/etc/apt/sources.list.d/{{ item }}"
+        state: absent
+      loop:
+        - opensearch-3.x.sources
+        - opensearch-3.x.list
+
+    - name: Download the OpenSearch ARM64 Debian package
+      ansible.builtin.get_url:
+        url: >-
+          https://artifacts.opensearch.org/releases/bundle/opensearch/
+          {{- opensearch_version -}}/opensearch-
+          {{- opensearch_version -}}-linux-arm64.deb
+        dest: >-
+          /var/cache/apt/archives/opensearch-
+          {{- opensearch_version -}}-linux-arm64.deb
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Download the OpenSearch package signature
+      ansible.builtin.get_url:
+        url: >-
+          https://artifacts.opensearch.org/releases/bundle/opensearch/
+          {{- opensearch_version -}}/opensearch-
+          {{- opensearch_version -}}-linux-arm64.deb.sig
+        dest: >-
+          /var/cache/apt/archives/opensearch-
+          {{- opensearch_version -}}-linux-arm64.deb.sig
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Verify the OpenSearch package signature
+      ansible.builtin.command:
+        cmd: >-
+          gpgv --keyring /etc/apt/keyrings/opensearch.gpg
+          /var/cache/apt/archives/opensearch-{{ opensearch_version }}-linux-arm64.deb.sig
+          /var/cache/apt/archives/opensearch-{{ opensearch_version }}-linux-arm64.deb
+      changed_when: false
+
+    - name: Install the requested OpenSearch version
+      ansible.builtin.apt:
+        deb: >-
+          /var/cache/apt/archives/opensearch-
+          {{- opensearch_version -}}-linux-arm64.deb
+        state: present
+        policy_rc_d: 101
+      environment:
+        DISABLE_INSTALL_DEMO_CONFIG: "true"
+
+    - name: Enable OpenSearch for future boots but keep it stopped for TLS setup
+      ansible.builtin.systemd_service:
+        name: opensearch
+        enabled: true
+        state: stopped
+
+    - name: Read the installed OpenSearch package version
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f=${Version} opensearch
+      register: opensearch_installed_package
+      changed_when: false
+
+    - name: Verify the installed OpenSearch package version
+      ansible.builtin.assert:
+        that:
+          - opensearch_installed_package.stdout is version(opensearch_version, '==')
+        success_msg: >-
+          {{ inventory_hostname }} has OpenSearch
+          {{ opensearch_installed_package.stdout }} installed.
+        fail_msg: >-
+          Expected OpenSearch {{ opensearch_version }}, but found
+          {{ opensearch_installed_package.stdout }} on {{ inventory_hostname }}.

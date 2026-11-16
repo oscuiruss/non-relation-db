@@ -1,0 +1,29 @@
+log_format lab_json escape=json
+  '{'
+    '"@timestamp":"$time_iso8601",'
+    '"remote_addr":"$remote_addr",'
+    '"request_method":"$request_method",'
+    '"request_uri":"$request_uri",'
+    '"server_protocol":"$server_protocol",'
+    '"status":$status,'
+    '"body_bytes_sent":$body_bytes_sent,'
+    '"request_time":$request_time,'
+    '"http_referer":"$http_referer",'
+    '"http_user_agent":"$http_user_agent"'
+  '}';
+
+server {
+    listen {{ nginx_listen_port }} default_server;
+    listen [::]:{{ nginx_listen_port }} default_server;
+
+    server_name _;
+    root /var/www/opensearch-lab;
+    index index.html;
+
+    access_log /var/log/nginx/access-json.log lab_json;
+    error_log /var/log/nginx/error.log warn;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

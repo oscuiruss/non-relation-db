@@ -1,0 +1,33 @@
+---
+- name: Validate encrypted OpenSearch user secrets
+  hosts: opensearch_nodes
+  gather_facts: false
+
+  tasks:
+    - name: Validate required passwords without printing them
+      ansible.builtin.assert:
+        that:
+          - vault_opensearch_writer_password is defined
+          - vault_opensearch_reader_password is defined
+          - vault_opensearch_monitor_password is defined
+          - vault_opensearch_writer_password | length >= 12
+          - vault_opensearch_reader_password | length >= 12
+          - vault_opensearch_monitor_password | length >= 12
+          - vault_opensearch_writer_password != vault_opensearch_reader_password
+          - vault_opensearch_writer_password != vault_opensearch_monitor_password
+          - vault_opensearch_reader_password != vault_opensearch_monitor_password
+        fail_msg: >-
+          Vault must contain three different OpenSearch passwords,
+          each at least 12 characters long.
+        success_msg: >-
+          Vault contains three different OpenSearch passwords
+          with acceptable length.
+      no_log: true
+      run_once: true
+      delegate_to: localhost
+
+    - name: Confirm successful Vault validation
+      ansible.builtin.debug:
+        msg: >-
+          Vault validation passed. Secret values were not printed.
+      run_once: true
